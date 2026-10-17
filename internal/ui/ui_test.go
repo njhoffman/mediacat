@@ -114,4 +114,17 @@ func TestPlainProgress(t *testing.T) {
 	if got := run(); got != "" {
 		t.Errorf("no updates = %q", got)
 	}
+	got = run(Update{Label: "Hashing", Total: 2}, Update{Label: "Hashing", Total: 2, Done: 2, Bytes: 3 << 30, TotalBytes: 3 << 30})
+	if want := "Hashing: 2/2  3.0 GiB/3.0 GiB\n"; got != want {
+		t.Errorf("bytes = %q", got)
+	}
+}
+
+func TestBanner(t *testing.T) {
+	DisableColor()
+	b := Banner(LevelDanger, "3 files will be PERMANENTLY DELETED", "This cannot be undone.")
+	lines := strings.Split(b, "\n")
+	if len(lines) != 4 || !strings.Contains(lines[1], "PERMANENTLY DELETED") || !strings.HasPrefix(lines[0], "╭") {
+		t.Errorf("banner:\n%s", b)
+	}
 }

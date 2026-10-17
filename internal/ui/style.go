@@ -4,6 +4,7 @@ package ui
 import (
 	"io"
 	"os"
+	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
@@ -51,4 +52,27 @@ func Width(w io.Writer) int {
 		return 0
 	}
 	return cols
+}
+
+// Banner levels.
+const (
+	LevelInfo = iota
+	LevelWarn
+	LevelDanger
+)
+
+// Banner renders lines in a bordered box colored by level. The first line is the headline.
+func Banner(level int, lines ...string) string {
+	color := colAccent
+	switch level {
+	case LevelWarn:
+		color = colWarn
+	case LevelDanger:
+		color = colErr
+	}
+	if len(lines) > 0 {
+		lines[0] = lipgloss.NewStyle().Bold(true).Foreground(color).Render(lines[0])
+	}
+	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(color).Padding(0, 1)
+	return box.Render(strings.Join(lines, "\n"))
 }

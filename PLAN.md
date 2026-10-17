@@ -4,7 +4,7 @@ Interactive audio/image/video cataloger and duplicate manager. Scans any directo
 recursively, keeps a persistent catalog of file and media metadata, finds duplicates at
 selectable depths, and trashes, deletes, or moves them safely.
 
-Status: phase 1 implemented (uncommitted, pending review). Phases 2-5 not started.
+Status: phases 1-2 implemented (phase 2 uncommitted, pending review). Phases 3-5 not started.
 
 ## Goals
 
@@ -148,20 +148,55 @@ probing ~7 files/s. A first scan of the full share (~11k media files) should tak
 
 ## Phase 2: exact duplicates and actions
 
-- Tiers: size -> partial hash (first/middle/last 64K) -> full hash (xxh3). Selectable with
-  a depth flag.
-- Hash cache keyed by (volume_id, relpath, size, mtime_ns). Reuse Stash oshash where the
-  file's size and mtime match Stash's record.
-- Jobs table checkpoints stage and remaining work; Ctrl-C finishes the current file,
-  commits, exits. Re-run resumes.
-- Keep policies, composable: highest resolution, highest bitrate, oldest mtime, shortest
-  path, preferred-directory list.
-- Actions: trash (same volume only), permanent delete, move (preserve relative structure
-  under target). Dry run default, `--execute` to apply, prominent confirmation as above.
-- Action log table for undoing moves.
-- Optional sidecar handling (`.srt`, `.xmp`, `.nfo`, `.cue`) behind a flag.
-- Export duplicate groups to CSV and JSON.
-- Stash Clean reminder after actions touching Stash library paths.
+### Commands
+
+- `mediacat dupes [path]` - find duplicates under path (or `--all`), report groups with the
+  copy to keep marked, and optionally act on the extra copies.
+  - `--depth size|partial|full` (default full). size and partial are report-only.
+  - `--type`, `--min-size` (default 1 byte, so empty files never match).
+  - `--keep RULES` (default `prefer,avoid,plain,oldest,shortest`), `--prefer DIR`, `--avoid DIR`.
+    Rules: prefer, avoid, plain (fewest copy markers like "(1)", " - Copy", "_2"), oldest,
+    newest, shortest, longest; ties go to the lexically first path.
+  - `--trash` | `--move-to DIR` | `--delete`, dry run unless `--execute`.
+  - `--yes` skips the y/N prompt for trash and move only; `--delete` always requires typing
+    `delete` in a terminal.
+  - `--json`, `--export FILE.csv|.json`, `--limit`, `-j/--workers`, `--dry-run-files`.
+- `mediacat history [batch]` - past batches, or the files in one.
+- `mediacat undo <batch>` - restore a trash or move batch.
+- `mediacat trash [path]` - trash location, size, and how much mediacat put there;
+  `--empty` purges mediacat's entries, `--empty --everything` purges the whole trash. Both
+  require typing `delete`.
+
+### Implementation notes (phase 2)
+
+- No separate jobs table. Hashes live on the `files` row with the size/mtime they were
+  computed at; they are valid only while those match. An interrupted run commits finished
+  hashes (every 50 files or 2s) and a re-run hashes only what is missing. This gives the
+  planned resumability without job state to reconcile.
+- Stash oshash reuse was dropped: the partial hash costs three 64 KiB reads per file and
+  oshash cannot be compared against it, so the saving was not worth the mixed-hash logic.
+- Hash: xxh3-128. Partial = size + first/middle/last 64 KiB (files <= 192 KiB are hashed
+  whole). Workers default to 2 on network volumes, 1 on spinning disks, 4 otherwise.
+- Hardlinks (same volume and inode) are collapsed before grouping and never acted on.
+- Files whose size/mtime differ from the catalog are skipped as "changed since last scan".
+- Right before acting on each file, mediacat re-checks that it and its kept copy exist,
+  are unchanged since hashing, and are not the same file. Otherwise the file is skipped.
+- Trash follows the freedesktop spec: home trash for files on the home volume, else
+  `$top/.Trash/$uid` (sticky shared dir) or `$top/.Trash-$uid`, with `$top` the mount point.
+  Before any prompt, every file is checked to be on the same device as its trash; a
+  mismatch aborts the whole action. `.trashinfo` is written first (O_EXCL) to reserve the
+  name, as the spec requires; paths are relative to `$top` for volume trashes.
+- Renames use `renameat2(RENAME_NOREPLACE)`, falling back to check-then-rename where the
+  filesystem does not support it. Nothing is ever overwritten.
+- Cross-device moves check free space, copy to `<dest>.mediacat-partial` while hashing,
+  verify the hash, fsync, preserve mtime, rename into place, then remove the source.
+- Trashed and moved files are marked missing in the catalog (undo clears it without
+  re-probing); deleted files are removed. Every operation is logged in `actions`.
+- Stash: library paths are read from `--stash-config` (default `~/.stash/config.yml`).
+  After an action or undo touching them, mediacat reminds you to run Clean in Stash.
+
+Measured on the share: full hashing ran at ~37 MB/s with 2 workers (6 large candidates,
+3.5 minutes); cached re-runs take well under a second.
 
 ## Phase 3: interactive duplicate review
 

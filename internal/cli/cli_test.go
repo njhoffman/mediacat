@@ -14,24 +14,31 @@ import (
 )
 
 type harness struct {
-	t   *testing.T
-	db  string
-	dir string
-	now time.Time
+	t           *testing.T
+	db          string
+	dir         string
+	now         time.Time
+	stdin       string
+	interactive bool
+	stashCfg    string
 }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	ui.DisableColor()
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
-	return &harness{t: t, db: filepath.Join(t.TempDir(), "catalog.db"), dir: dir, now: time.Now()}
+	// Keep the home trash on the test's own volume so nothing is trashed outside it.
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	return &harness{t: t, db: filepath.Join(t.TempDir(), "catalog.db"), dir: dir, now: time.Now(),
+		stashCfg: filepath.Join(t.TempDir(), "no-stash.yml")}
 }
 
 func (h *harness) run(args ...string) (stdout, stderr string, code int) {
 	h.t.Helper()
 	var out, errb bytes.Buffer
-	a := &app{stdout: &out, stderr: &errb, now: func() time.Time { return h.now }}
-	code = a.run("test", append([]string{"--db", h.db}, args...))
+	a := &app{stdin: strings.NewReader(h.stdin), stdout: &out, stderr: &errb, now: func() time.Time { return h.now },
+		interactive: func() bool { return h.interactive }}
+	code = a.run("test", append([]string{"--db", h.db, "--stash-config", h.stashCfg}, args...))
 	return out.String(), errb.String(), code
 }
 

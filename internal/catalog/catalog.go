@@ -76,6 +76,40 @@ var migrations = []string{
 		pid          INTEGER NOT NULL DEFAULT 0
 	);
 	CREATE INDEX scans_volume ON scans (volume_id, status, finished_at);`,
+
+	// Content hashes are valid only while hash_size/hash_mtime_ns match the file's current
+	// size/mtime, so a changed file invalidates them without extra bookkeeping.
+	`ALTER TABLE files ADD COLUMN partial_hash TEXT NOT NULL DEFAULT '';
+	ALTER TABLE files ADD COLUMN full_hash TEXT NOT NULL DEFAULT '';
+	ALTER TABLE files ADD COLUMN hash_size INTEGER NOT NULL DEFAULT -1;
+	ALTER TABLE files ADD COLUMN hash_mtime_ns INTEGER NOT NULL DEFAULT 0;
+	CREATE INDEX files_full_hash ON files (full_hash) WHERE full_hash != '';
+	CREATE TABLE batches (
+		id          INTEGER PRIMARY KEY,
+		kind        TEXT NOT NULL,
+		root        TEXT NOT NULL,
+		dest        TEXT NOT NULL DEFAULT '',
+		started_at  INTEGER NOT NULL,
+		finished_at INTEGER,
+		status      TEXT NOT NULL,
+		undone_at   INTEGER
+	);
+	CREATE TABLE actions (
+		id           INTEGER PRIMARY KEY,
+		batch_id     INTEGER NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+		volume_key   TEXT NOT NULL,
+		relpath      TEXT NOT NULL,
+		source_path  TEXT NOT NULL,
+		size         INTEGER NOT NULL,
+		full_hash    TEXT NOT NULL,
+		keeper_path  TEXT NOT NULL,
+		dest_path    TEXT NOT NULL DEFAULT '',
+		info_path    TEXT NOT NULL DEFAULT '',
+		status       TEXT NOT NULL,
+		error        TEXT NOT NULL DEFAULT '',
+		at           INTEGER NOT NULL
+	);
+	CREATE INDEX actions_batch ON actions (batch_id);`,
 }
 
 // DB wraps the catalog database.
@@ -217,6 +251,10 @@ type File struct {
 	ProbeError   string
 	ScannedAt    time.Time
 	MissingSince *time.Time
+
+	// Content hashes; empty when not computed or no longer valid for the current size/mtime.
+	PartialHash string
+	FullHash    string
 
 	// Populated by queries that join volumes.
 	VolumeKey string
@@ -467,7 +505,9 @@ func ProcessAlive(pid int) bool {
 const fileCols = `f.id, f.volume_id, f.relpath, f.size, f.mtime_ns, f.inode, f.kind, f.container, f.duration_ms,
 	f.width, f.height, f.video_codec, f.audio_codec, f.bitrate, f.fps, f.sample_rate, f.channels,
 	f.tag_artist, f.tag_album, f.tag_title, f.tag_track, f.tag_year, f.tag_genre,
-	f.probe_error, f.scanned_at, f.missing_since, v.key, v.last_mount_path, v.last_mount_root`
+	f.probe_error, f.scanned_at, f.missing_since, v.key, v.last_mount_path, v.last_mount_root,
+	CASE WHEN f.hash_size = f.size AND f.hash_mtime_ns = f.mtime_ns THEN f.partial_hash ELSE '' END,
+	CASE WHEN f.hash_size = f.size AND f.hash_mtime_ns = f.mtime_ns THEN f.full_hash ELSE '' END`
 
 func scanFile(rows interface{ Scan(...any) error }, extra ...any) (File, error) {
 	var f File
@@ -478,7 +518,7 @@ func scanFile(rows interface{ Scan(...any) error }, extra ...any) (File, error) 
 	dest := []any{&f.ID, &f.VolumeID, &f.RelPath, &f.Size, &f.MtimeNS, &inode, &f.Kind, &m.Container, &m.DurationMS,
 		&m.Width, &m.Height, &m.VideoCodec, &m.AudioCodec, &m.Bitrate, &m.FPS, &m.SampleRate, &m.Channels,
 		&m.Tags.Artist, &m.Tags.Album, &m.Tags.Title, &m.Tags.Track, &m.Tags.Year, &m.Tags.Genre,
-		&f.ProbeError, &scanned, &missing, &f.VolumeKey, &mountPath, &mountRoot}
+		&f.ProbeError, &scanned, &missing, &f.VolumeKey, &mountPath, &mountRoot, &f.PartialHash, &f.FullHash}
 	if err := rows.Scan(append(dest, extra...)...); err != nil {
 		return f, err
 	}
@@ -651,4 +691,243 @@ func (c *DB) LatestCompleteScans() (map[int64]Scan, error) {
 		out[s.VolumeID] = s
 	}
 	return out, rows.Err()
+}
+
+// SetHashes stores content hashes computed for a file at the given size and mtime. An
+// empty full hash leaves any existing full hash untouched only if it is still valid.
+func (t *Tx) SetHashes(id, size, mtimeNS int64, partial, full string) error {
+	_, err := t.tx.Exec(`UPDATE files SET
+			full_hash = CASE WHEN ? != '' THEN ?
+				WHEN hash_size = ? AND hash_mtime_ns = ? THEN full_hash ELSE '' END,
+			partial_hash = ?, hash_size = ?, hash_mtime_ns = ?
+		WHERE id = ?`, full, full, size, mtimeNS, partial, size, mtimeNS, id)
+	return err
+}
+
+// FileByID returns one file, or nil.
+func (c *DB) FileByID(id int64) (*File, error) {
+	row := c.db.QueryRow(`SELECT `+fileCols+` FROM files f JOIN volumes v ON v.id = f.volume_id WHERE f.id = ?`, id)
+	f, err := scanFile(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
+// Action kinds.
+const (
+	ActionTrash  = "trash"
+	ActionDelete = "delete"
+	ActionMove   = "move"
+)
+
+// Action statuses.
+const (
+	ActionDone    = "done"
+	ActionFailed  = "failed"
+	ActionSkipped = "skipped"
+	ActionUndone  = "undone"
+)
+
+// Batch is one execution of an action over a set of duplicates.
+type Batch struct {
+	ID         int64
+	Kind       string
+	Root       string
+	Dest       string
+	StartedAt  time.Time
+	FinishedAt *time.Time
+	Status     string
+	UndoneAt   *time.Time
+	Done       int
+	Failed     int
+	Bytes      int64
+}
+
+// Action is one file operation inside a batch.
+type Action struct {
+	ID         int64
+	BatchID    int64
+	VolumeKey  string
+	RelPath    string
+	SourcePath string
+	Size       int64
+	FullHash   string
+	KeeperPath string
+	DestPath   string // move destination or trash files/ entry
+	InfoPath   string // trash .trashinfo file
+	Status     string
+	Error      string
+	At         time.Time
+}
+
+// StartBatch records the start of an action batch.
+func (c *DB) StartBatch(kind, root, dest string, now time.Time) (int64, error) {
+	res, err := c.db.Exec(`INSERT INTO batches (kind, root, dest, started_at, status) VALUES (?, ?, ?, ?, ?)`,
+		kind, root, dest, now.Unix(), ScanRunning)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// FinishBatch records a batch's final status.
+func (c *DB) FinishBatch(id int64, status string, now time.Time) error {
+	_, err := c.db.Exec(`UPDATE batches SET status = ?, finished_at = ? WHERE id = ?`, status, now.Unix(), id)
+	return err
+}
+
+// MarkBatchUndone records that a batch was reverted.
+func (c *DB) MarkBatchUndone(id int64, now time.Time) error {
+	_, err := c.db.Exec(`UPDATE batches SET undone_at = ? WHERE id = ?`, now.Unix(), id)
+	return err
+}
+
+// RecordAction appends an action to the log and, for completed actions, updates the
+// catalog in the same transaction: trashed and moved files are marked missing (so undo
+// can restore the row without re-probing), deleted files are removed.
+func (c *DB) RecordAction(a Action, fileID int64, kind string) error {
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO actions (batch_id, volume_key, relpath, source_path, size, full_hash, keeper_path,
+			dest_path, info_path, status, error, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.BatchID, a.VolumeKey, a.RelPath, a.SourcePath, a.Size, a.FullHash, a.KeeperPath,
+		a.DestPath, a.InfoPath, a.Status, a.Error, a.At.Unix()); err != nil {
+		return err
+	}
+	if a.Status == ActionDone {
+		if kind == ActionDelete {
+			_, err = tx.Exec(`DELETE FROM files WHERE id = ?`, fileID)
+		} else {
+			_, err = tx.Exec(`UPDATE files SET missing_since = COALESCE(missing_since, ?) WHERE id = ?`, a.At.Unix(), fileID)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+const batchCols = `b.id, b.kind, b.root, b.dest, b.started_at, b.finished_at, b.status, b.undone_at,
+	(SELECT count(*) FROM actions WHERE batch_id = b.id AND status IN ('done', 'undone')),
+	(SELECT count(*) FROM actions WHERE batch_id = b.id AND status = 'failed'),
+	(SELECT coalesce(sum(size), 0) FROM actions WHERE batch_id = b.id AND status IN ('done', 'undone'))`
+
+func scanBatch(row interface{ Scan(...any) error }) (Batch, error) {
+	var b Batch
+	var started int64
+	var finished, undone sql.NullInt64
+	err := row.Scan(&b.ID, &b.Kind, &b.Root, &b.Dest, &started, &finished, &b.Status, &undone, &b.Done, &b.Failed, &b.Bytes)
+	b.StartedAt = time.Unix(started, 0)
+	if finished.Valid {
+		t := time.Unix(finished.Int64, 0)
+		b.FinishedAt = &t
+	}
+	if undone.Valid {
+		t := time.Unix(undone.Int64, 0)
+		b.UndoneAt = &t
+	}
+	return b, err
+}
+
+// Batches lists the most recent batches.
+func (c *DB) Batches(limit int) ([]Batch, error) {
+	rows, err := c.db.Query(`SELECT `+batchCols+` FROM batches b ORDER BY b.id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Batch
+	for rows.Next() {
+		b, err := scanBatch(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// GetBatch returns a batch and its actions, or nil.
+func (c *DB) GetBatch(id int64) (*Batch, []Action, error) {
+	b, err := scanBatch(c.db.QueryRow(`SELECT `+batchCols+` FROM batches b WHERE b.id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	rows, err := c.db.Query(`SELECT id, batch_id, volume_key, relpath, source_path, size, full_hash, keeper_path,
+			dest_path, info_path, status, error, at FROM actions WHERE batch_id = ? ORDER BY id`, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	var acts []Action
+	for rows.Next() {
+		var a Action
+		var at int64
+		if err := rows.Scan(&a.ID, &a.BatchID, &a.VolumeKey, &a.RelPath, &a.SourcePath, &a.Size, &a.FullHash, &a.KeeperPath,
+			&a.DestPath, &a.InfoPath, &a.Status, &a.Error, &at); err != nil {
+			return nil, nil, err
+		}
+		a.At = time.Unix(at, 0)
+		acts = append(acts, a)
+	}
+	return &b, acts, rows.Err()
+}
+
+// MarkActionUndone records that one action was reverted and restores the file's catalog
+// row when it still exists.
+func (c *DB) MarkActionUndone(a Action) error {
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE actions SET status = ? WHERE id = ?`, ActionUndone, a.ID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE files SET missing_since = NULL
+		WHERE relpath = ? AND volume_id = (SELECT id FROM volumes WHERE key = ?)`, a.RelPath, a.VolumeKey); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// TrashedEntries returns completed trash actions that have not been undone, for emptying
+// only what mediacat put in a trash directory.
+func (c *DB) TrashedEntries(volumeKey string) ([]Action, error) {
+	rows, err := c.db.Query(`SELECT a.id, a.batch_id, a.volume_key, a.relpath, a.source_path, a.size, a.full_hash,
+			a.keeper_path, a.dest_path, a.info_path, a.status, a.error, a.at
+		FROM actions a JOIN batches b ON b.id = a.batch_id
+		WHERE b.kind = ? AND a.status = ? AND a.volume_key = ? ORDER BY a.id`, ActionTrash, ActionDone, volumeKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Action
+	for rows.Next() {
+		var a Action
+		var at int64
+		if err := rows.Scan(&a.ID, &a.BatchID, &a.VolumeKey, &a.RelPath, &a.SourcePath, &a.Size, &a.FullHash,
+			&a.KeeperPath, &a.DestPath, &a.InfoPath, &a.Status, &a.Error, &at); err != nil {
+			return nil, err
+		}
+		a.At = time.Unix(at, 0)
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// MarkActionPurged records that a trashed file was permanently removed from the trash.
+func (c *DB) MarkActionPurged(id int64) error {
+	_, err := c.db.Exec(`UPDATE actions SET status = 'purged' WHERE id = ?`, id)
+	return err
 }

@@ -513,3 +513,9 @@ func (s *Scanner) probeAll(ctx context.Context, volID int64, files []found, know
 	}
 	return commit()
 }
+
+// ExcludedByDefault reports whether a scan skips path because a component of it below
+// root matches DefaultExcludes.
+func ExcludedByDefault(path, root string) bool {
+	return excludedPath(path, root, DefaultExcludes)
+}

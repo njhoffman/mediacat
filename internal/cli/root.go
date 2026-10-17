@@ -2,16 +2,19 @@
 package cli
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/njhoffman/mediacat/internal/catalog"
+	"github.com/njhoffman/mediacat/internal/stash"
 	"github.com/njhoffman/mediacat/internal/ui"
 	"github.com/njhoffman/mediacat/internal/volume"
 )
@@ -27,9 +30,13 @@ type app struct {
 	dbPath    string
 	staleDays int
 	noColor   bool
+	stashCfg  string
+	stdin     io.Reader
 	stdout    io.Writer
 	stderr    io.Writer
 	now       func() time.Time
+	// interactive reports whether prompts can be answered; tests override it.
+	interactive func() bool
 
 	db  *catalog.DB
 	res *volume.Resolver
@@ -37,7 +44,8 @@ type app struct {
 
 // Execute runs the CLI and returns the process exit code.
 func Execute(version string) int {
-	a := &app{stdout: os.Stdout, stderr: os.Stderr, now: time.Now}
+	a := &app{stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr, now: time.Now,
+		interactive: func() bool { return ui.IsTerminal(os.Stdin) && ui.IsTerminal(os.Stderr) }}
 	return a.run(version, os.Args[1:])
 }
 
@@ -89,7 +97,8 @@ Run without arguments for a dashboard of what has been cataloged.`,
 	f.StringVar(&a.dbPath, "db", catalog.DefaultPath(), "catalog database path")
 	f.IntVar(&a.staleDays, "stale-days", staleDefault, "warn when the catalog for a path is older than this many days (0 disables; env MEDIACAT_STALE_DAYS)")
 	f.BoolVar(&a.noColor, "no-color", false, "disable colored output (also honors NO_COLOR)")
-	root.AddCommand(a.scanCmd(), a.listCmd(), a.infoCmd())
+	f.StringVar(&a.stashCfg, "stash-config", stash.DefaultConfig(), "Stash config, read to remind you when files in Stash libraries change")
+	root.AddCommand(a.scanCmd(), a.listCmd(), a.infoCmd(), a.dupesCmd(), a.trashCmd(), a.historyCmd(), a.undoCmd())
 	return root
 }
 
@@ -143,4 +152,46 @@ func (a *app) mountedPath(key, lastPath, lastRoot string) (string, string, bool)
 		return v.MountPoint, v.MountRoot, true
 	}
 	return lastPath, lastRoot, false
+}
+
+// confirm asks a question on stderr and reads the answer. With want == "" any answer
+// starting with y accepts; otherwise the answer must equal want exactly.
+func (a *app) confirm(prompt, want string) (bool, error) {
+	if a.interactive == nil || !a.interactive() {
+		return false, errors.New("confirmation needs an interactive terminal")
+	}
+	fmt.Fprint(a.stderr, prompt)
+	line, err := bufio.NewReader(a.stdin).ReadString('\n')
+	if err != nil && line == "" {
+		return false, nil
+	}
+	line = strings.TrimSpace(line)
+	if want == "" {
+		return strings.HasPrefix(strings.ToLower(line), "y"), nil
+	}
+	return line == want, nil
+}
+
+// mountedOnly points AbsPath at the current mount and clears it for files on volumes
+// that are not mounted, so nothing touches a stale path.
+func (a *app) mountedOnly(files []catalog.File) map[string]volume.Volume {
+	vols := map[string]volume.Volume{}
+	missing := map[string]bool{}
+	for i := range files {
+		f := &files[i]
+		v, ok := vols[f.VolumeKey]
+		if !ok && !missing[f.VolumeKey] {
+			if v, ok = a.res.Lookup(f.VolumeKey); ok {
+				vols[f.VolumeKey] = v
+			} else {
+				missing[f.VolumeKey] = true
+			}
+		}
+		if !ok {
+			f.AbsPath = ""
+			continue
+		}
+		f.AbsPath, _ = v.AbsPath(f.RelPath)
+	}
+	return vols
 }

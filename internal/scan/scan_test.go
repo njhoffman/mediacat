@@ -356,3 +356,12 @@ func TestRealProbe(t *testing.T) {
 		t.Errorf("audio row: %+v", songs)
 	}
 }
+
+func TestExcludedByDefault(t *testing.T) {
+	if !ExcludedByDefault("/mnt/nfs/trashbox/x", "/mnt/nfs") || !ExcludedByDefault("/mnt/nfs/a/.Trash-1000", "/mnt/nfs") {
+		t.Error("trash dirs should be excluded")
+	}
+	if ExcludedByDefault("/mnt/nfs/holding", "/mnt/nfs") {
+		t.Error("ordinary dir excluded")
+	}
+}

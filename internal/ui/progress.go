@@ -83,11 +83,13 @@ func (p Progress) runTUI(ctx context.Context, work func(report func(Update)) err
 	return werr
 }
 
-// runPlain logs the final state of each phase plus a line every few seconds within it.
+// runPlain logs the final state of each phase, plus a line every 10 seconds while work
+// is actually advancing.
 func (p Progress) runPlain(work func(report func(Update)) error) error {
 	var mu sync.Mutex
 	var last Update
 	var lastPrint time.Time
+	var shown Update
 	started, printed := false, true
 	print := func(u Update) {
 		switch {
@@ -95,10 +97,12 @@ func (p Progress) runPlain(work func(report func(Update)) error) error {
 			fmt.Fprintf(p.Out, "%s: %s found\n", u.Label, Count(u.Found))
 		case u.Total == 0:
 			fmt.Fprintf(p.Out, "%s: nothing to do\n", u.Label)
+		case u.TotalBytes > 0:
+			fmt.Fprintf(p.Out, "%s: %s/%s  %s/%s\n", u.Label, Count(u.Done), Count(u.Total), Bytes(u.Bytes), Bytes(u.TotalBytes))
 		default:
 			fmt.Fprintf(p.Out, "%s: %s/%s\n", u.Label, Count(u.Done), Count(u.Total))
 		}
-		lastPrint, printed = time.Now(), true
+		lastPrint, printed, shown = time.Now(), true, u
 	}
 	err := work(func(u Update) {
 		mu.Lock()
@@ -108,7 +112,8 @@ func (p Progress) runPlain(work func(report func(Update)) error) error {
 		}
 		phaseChanged := !started || u.Label != last.Label
 		started, last, printed = true, u, false
-		if !phaseChanged && time.Since(lastPrint) >= 5*time.Second {
+		moved := u.Done != shown.Done || u.Bytes != shown.Bytes || u.Found != shown.Found
+		if !phaseChanged && moved && time.Since(lastPrint) >= 10*time.Second {
 			print(u)
 		}
 	})
