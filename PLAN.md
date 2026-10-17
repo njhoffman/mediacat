@@ -4,7 +4,7 @@ Interactive audio/image/video cataloger and duplicate manager. Scans any directo
 recursively, keeps a persistent catalog of file and media metadata, finds duplicates at
 selectable depths, and trashes, deletes, or moves them safely.
 
-Status: phases 1-2 implemented (phase 2 uncommitted, pending review). Phases 3-5 not started.
+Status: phases 1-2 implemented and committed. Phases 3-5 not started.
 
 ## Goals
 
