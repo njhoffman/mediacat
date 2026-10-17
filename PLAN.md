@@ -4,7 +4,7 @@ Interactive audio/image/video cataloger and duplicate manager. Scans any directo
 recursively, keeps a persistent catalog of file and media metadata, finds duplicates at
 selectable depths, and trashes, deletes, or moves them safely.
 
-Status: planning. Phase 1 approved, not started.
+Status: phase 1 implemented (uncommitted, pending review). Phases 2-5 not started.
 
 ## Goals
 
@@ -120,6 +120,31 @@ WAL mode. Schema versioned with an embedded migration list.
   change detection.
 - Integration tests against tiny media generated with `ffmpeg -f lavfi` in a temp dir
   (video, audio with tags, image, plus a truncated file).
+
+### Implementation notes (phase 1)
+
+Decisions made during implementation, beyond the plan above:
+
+- Trash and NAS metadata directories are always skipped: `.Trash`, `.Trash-*`, `.Trashes`, `trashbox`,
+  `$RECYCLE.BIN`, `System Volume Information`, `@eaDir`, `#recycle`, `lost+found`.
+  Otherwise trashed files would be cataloged and later reported as duplicates.
+- `--exclude` globs match file and directory base names. Excluded or unreadable paths are
+  never marked missing, so narrowing a scan does not flag files as deleted.
+- New files are written to the catalog only after probing, so an interrupted scan resumes by
+  re-probing just the unfinished files. Probe results commit every 50 files or 2 seconds.
+- Probe failures are split: permanent errors (not valid media) are recorded with
+  `probe_error`; transient ones (EIO, timeouts, dropped connection) are reported as deferred
+  and not recorded, so the next scan retries them.
+- Renames are detected only when exactly one missing file has the same (inode, size, mtime).
+- Scans record their PID; a scan left `running` by a dead process is shown as interrupted.
+- Extra flags: `scan --probe-timeout`, `scan -j/--workers`, `list --errors`, `list --all`,
+  `info --json` (includes raw ffprobe output). `--stale-days 0` disables staleness warnings.
+- Progress goes to stderr (stdout stays clean for `--json`). Non-terminal output logs one line
+  per phase plus one every 5 seconds.
+
+Measured on the share (2 workers): walking ~80 files/s (one lstat round trip per file),
+probing ~7 files/s. A first scan of the full share (~11k media files) should take roughly
+25-30 minutes; rescans of unchanged trees take only the walk.
 
 ## Phase 2: exact duplicates and actions
 
