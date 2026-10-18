@@ -50,8 +50,10 @@ type Filter struct {
 	Genre          string
 	ModifiedAfter  time.Time
 	ModifiedBefore time.Time
-	Missing        bool // only files whose last scan did not find them
-	Errors         bool // only files that could not be probed
+	Checks         []string // integrity statuses; "unchecked" matches files never checked
+	Duplicates     bool     // only files with a known identical copy
+	Missing        bool     // only files whose last scan did not find them
+	Errors         bool     // only files that could not be probed
 	Sorts          []SortKey
 	Limit          int
 }
@@ -87,6 +89,8 @@ const (
 	FieldYear       = "year"
 	FieldGenre      = "genre"
 	FieldError      = "error"
+	FieldCheck      = "check"
+	FieldDup        = "dup"
 )
 
 // Fields lists every field, in the order help text shows them.
@@ -94,8 +98,11 @@ var Fields = []string{
 	FieldPath, FieldName, FieldDir, FieldExt, FieldType, FieldSize, FieldDuration, FieldRes, FieldWidth,
 	FieldHeight, FieldFPS, FieldBitrate, FieldVBitrate, FieldABitrate, FieldCodec, FieldVCodec, FieldACodec,
 	FieldContainer, FieldChannels, FieldSampleRate, FieldMtime, FieldScanned, FieldArtist, FieldAlbum,
-	FieldTitle, FieldTrack, FieldYear, FieldGenre, FieldError,
+	FieldTitle, FieldTrack, FieldYear, FieldGenre, FieldError, FieldCheck, FieldDup,
 }
+
+// CheckStatuses are the values --check accepts.
+var CheckStatuses = []string{"ok", "damaged", "unreadable", "unverified", "unchecked"}
 
 // IsField reports whether name is a known field.
 func IsField(name string) bool {
@@ -128,6 +135,15 @@ func (f Filter) Validate() error {
 	for _, r := range ranges {
 		if r.max > 0 && r.min > r.max {
 			return fmt.Errorf("min %s is larger than max %s", r.name, r.name)
+		}
+	}
+	for _, c := range f.Checks {
+		ok := false
+		for _, s := range CheckStatuses {
+			ok = ok || s == c
+		}
+		if !ok {
+			return fmt.Errorf("unknown check status %q (want %s)", c, strings.Join(CheckStatuses, ", "))
 		}
 	}
 	if !f.ModifiedAfter.IsZero() && !f.ModifiedBefore.IsZero() && f.ModifiedAfter.After(f.ModifiedBefore) {

@@ -14,6 +14,10 @@ import (
 	"github.com/njhoffman/mediacat/internal/ui"
 )
 
+// dupMarker flags files with a known identical copy. A plain Unicode shape, not an emoji,
+// so it renders in any terminal font.
+const dupMarker = "◆"
+
 type columnDef struct {
 	title string
 	right bool
@@ -35,6 +39,8 @@ var columnDefs = map[string]columnDef{
 	filter.FieldTitle: {title: "TITLE"}, filter.FieldTrack: {title: "TRACK", right: true},
 	filter.FieldYear: {title: "YEAR", right: true}, filter.FieldGenre: {title: "GENRE"},
 	filter.FieldError: {title: "ERROR", style: ui.Err},
+	filter.FieldCheck: {title: "CHECK"},
+	filter.FieldDup:   {title: ""},
 }
 
 func splitFields(spec string) []string {
@@ -162,7 +168,7 @@ func cellFor(field string, f catalog.File, base string, h config.Highlights) ui.
 	case filter.FieldBitrate:
 		text = ui.Bitrate(m.Bitrate)
 	case filter.FieldVBitrate:
-		text = ui.Bitrate(m.VideoBitrate)
+		return ui.Cell{Text: ui.Bitrate(m.VideoBitrate), Style: ui.Heat(h.VBitrate.Level(float64(m.VideoBitrate)))}
 	case filter.FieldABitrate:
 		text = ui.Bitrate(m.AudioBitrate)
 	case filter.FieldCodec:
@@ -201,6 +207,14 @@ func cellFor(field string, f catalog.File, base string, h config.Highlights) ui.
 		text = m.Tags.Genre
 	case filter.FieldError:
 		text = f.ProbeError
+	case filter.FieldCheck:
+		return checkCell(f.Check)
+	case filter.FieldDup:
+		if f.Copies > 1 {
+			st := ui.Warn
+			return ui.Cell{Text: dupMarker, Style: &st}
+		}
+		return ui.Cell{Text: ""}
 	}
 	return ui.Cell{Text: text}
 }
@@ -210,4 +224,29 @@ func intOrDash(n int) string {
 		return "-"
 	}
 	return fmt.Sprint(n)
+}
+
+// checkCell shows an integrity status, colored by severity, with the level for full checks.
+func checkCell(c catalog.Check) ui.Cell {
+	st := checkStyle(c.Status)
+	text := c.Status
+	switch {
+	case text == "":
+		text = "-"
+	case c.Level == catalog.LevelFull:
+		text += " (full)"
+	}
+	return ui.Cell{Text: text, Style: &st}
+}
+
+func checkStyle(status string) lipgloss.Style {
+	switch status {
+	case catalog.CheckOK:
+		return ui.OK
+	case catalog.CheckDamaged:
+		return ui.Warn
+	case catalog.CheckUnreadable:
+		return ui.Err
+	}
+	return ui.Dim
 }

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +18,7 @@ func TestTemplateIsDefault(t *testing.T) {
 	}
 	h := c.Highlights
 	if h.Size.Warn != 500<<20 || h.Size.Max != 4<<30 || h.Duration.Warn != 1_800_000 || h.Duration.Max != 7_200_000 ||
-		h.Resolution.Warn != 1920*1080 || h.Resolution.Max != 3840*2160 {
+		h.Resolution.Warn != 1920*1080 || h.Resolution.Max != 3840*2160 || h.VBitrate.Warn != 10e6 || h.VBitrate.Max != 50e6 {
 		t.Errorf("highlights: %+v", h)
 	}
 	if !strings.HasSuffix(c.Catalog, ".local/share/mediacat/catalog.db") || strings.HasPrefix(c.Catalog, "~") {
@@ -26,16 +28,16 @@ func TestTemplateIsDefault(t *testing.T) {
 
 func TestLoadCreatesAndMerges(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "sub", "mediacat.yaml")
-	c, created, err := Load(p)
-	if err != nil || !created || c.StaleDays != 30 {
-		t.Fatalf("first load: %v %v", created, err)
+	c, status, err := Load(p)
+	if err != nil || status != Created || c.StaleDays != 30 {
+		t.Fatalf("first load: %v %v", status, err)
 	}
 	if b, _ := os.ReadFile(p); string(b) != Template {
 		t.Error("created file should be the template")
 	}
 	os.WriteFile(p, []byte("stale_days: 7\nlist:\n  highlight:\n    size:\n      warn: ''\n"), 0o644)
-	c, created, err = Load(p)
-	if err != nil || created || c.StaleDays != 7 || c.Dupes.Keep == "" || c.Highlights.Size.Enabled || !c.Highlights.Duration.Enabled {
+	c, status, err = Load(p)
+	if err != nil || status != Loaded || c.StaleDays != 7 || c.Dupes.Keep == "" || c.Highlights.Size.Enabled || !c.Highlights.Duration.Enabled {
 		t.Errorf("merge: %+v %v", c, err)
 	}
 }
@@ -66,5 +68,33 @@ func TestScaleLevel(t *testing.T) {
 	}
 	if (Scale{}).Level(100) != 0 {
 		t.Error("disabled scale")
+	}
+}
+
+func TestUneditedOldDefaultIsUpgraded(t *testing.T) {
+	old := "list:\n  columns: size,path\n"
+	previousTemplates[fmt.Sprintf("%x", sha256.Sum256([]byte(old)))] = true
+	t.Cleanup(func() { delete(previousTemplates, fmt.Sprintf("%x", sha256.Sum256([]byte(old)))) })
+
+	p := filepath.Join(t.TempDir(), "mediacat.yaml")
+	os.WriteFile(p, []byte(old), 0o644)
+	c, status, err := Load(p)
+	if err != nil || status != Upgraded || c.List.Columns == "size,path" {
+		t.Fatalf("upgrade: %v %v %q", status, err, c.List.Columns)
+	}
+	if b, _ := os.ReadFile(p); string(b) != Template {
+		t.Error("file should now hold the current template")
+	}
+	// An edited file is left alone.
+	edited := old + "stale_days: 5\n"
+	os.WriteFile(p, []byte(edited), 0o644)
+	if c, status, _ = Load(p); status != Loaded || c.List.Columns != "size,path" {
+		t.Errorf("edited file changed: %v %q", status, c.List.Columns)
+	}
+}
+
+func TestCurrentTemplateIsNotListedAsPrevious(t *testing.T) {
+	if previousTemplates[fmt.Sprintf("%x", sha256.Sum256([]byte(Template)))] {
+		t.Error("the current template must not be in previousTemplates (it would be rewritten every run)")
 	}
 }

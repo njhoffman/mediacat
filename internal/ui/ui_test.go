@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 func TestFormatters(t *testing.T) {
@@ -145,16 +148,28 @@ func TestHeat(t *testing.T) {
 	if Heat(0) != nil || Heat(-1) != nil {
 		t.Error("no style at or under the threshold")
 	}
-	slight, mid, max := Heat(0.01), Heat(0.6), Heat(5)
-	if slight == nil || mid == nil || max == nil {
-		t.Fatal("expected styles")
+	for _, profile := range []termenv.Profile{termenv.ANSI256, termenv.TrueColor} {
+		lipgloss.SetColorProfile(profile)
+		resetHeat()
+		slight, max := Heat(0.01), Heat(5)
+		if slight == nil || max == nil || slight == max || Heat(1) != max {
+			t.Fatal("levels should map to distinct steps, clamped at 1")
+		}
+		for _, lv := range []float64{0.01, 0.5, 1} {
+			if Heat(lv).GetBold() {
+				t.Errorf("level %v is bold", lv)
+			}
+		}
 	}
-	if slight.GetBold() || !mid.GetBold() || !max.GetBold() {
-		t.Error("bold should start at the halfway point")
+	if len(heatStyles) != heatStepsTrueColor {
+		t.Errorf("true color should use %d steps, got %d", heatStepsTrueColor, len(heatStyles))
 	}
-	if slight == max || Heat(1) != max {
-		t.Error("levels should map to distinct steps, clamped at 1")
+	// Neighboring levels get different shades on true color.
+	if Heat(0.50) == Heat(0.53) {
+		t.Error("true color gradient too coarse")
 	}
+	lipgloss.SetColorProfile(termenv.Ascii)
+	resetHeat()
 	if blend(heatDark, 0) != "#ede3a1" || blend(heatDark, 1) != "#ff4d4d" {
 		t.Errorf("gradient ends: %s %s", blend(heatDark, 0), blend(heatDark, 1))
 	}

@@ -73,6 +73,13 @@ func Value(f File, field string) (num float64, str string, numeric, known bool) 
 		return t(strings.ToLower(m.Tags.Genre))
 	case filter.FieldError:
 		return t(f.ProbeError)
+	case filter.FieldCheck:
+		return t(f.Check.Status)
+	case filter.FieldDup:
+		if f.Copies > 1 {
+			return float64(f.Copies), "", true, true
+		}
+		return 0, "", true, false
 	}
 	return 0, "", false, false
 }

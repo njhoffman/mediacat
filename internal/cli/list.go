@@ -33,6 +33,8 @@ type listFlags struct {
 	title, genre                        string
 	after, before                       string
 	sort, columns                       string
+	checks                              []string
+	duplicates                          bool
 	limit                               int
 }
 
@@ -61,8 +63,9 @@ frame (720p, 1080p, 4k, 1920x1080). Bitrates take decimal units (128k, 4.5M).
 Dates take 2026-01-31 or an age (7d, 2w, 3mo). Text filters match anywhere,
 ignoring case.
 
-Size, duration and resolution cells are tinted from yellow to bold red as values
-exceed the list.highlight thresholds in the config.`,
+Size, duration, resolution and video bitrate cells are tinted from pale yellow to red
+as values exceed the list.highlight thresholds in the config. The first column marks
+files with a known identical copy (` + dupMarker + `), from the full hashes mediacat dupes computes.`,
 		Example: `  mediacat list --type video --min-res 1080p --min-duration 10m --sort -size
   mediacat list --type audio --artist beatles --sort album,track --columns +album,+track
   mediacat list --vcodec mpeg4,wmv3 --columns name,size,vcodec,vbitrate --sort -vbitrate
@@ -124,6 +127,8 @@ exceed the list.highlight thresholds in the config.`,
 	f.IntVarP(&lf.limit, "limit", "n", 0, "show at most this many files")
 	f.BoolVar(&lf.missing, "missing", false, "only files the last scan did not find on disk")
 	f.BoolVar(&lf.errOnly, "errors", false, "only files that could not be probed")
+	f.BoolVar(&lf.duplicates, "duplicates", false, "only files with a known identical copy (marked "+dupMarker+"; found by mediacat dupes)")
+	f.StringSliceVar(&lf.checks, "check", nil, "integrity status: "+strings.Join(filter.CheckStatuses, ", ")+" (repeatable)")
 	return cmd
 }
 
@@ -145,7 +150,8 @@ func (lf listFlags) parse(now time.Time) (filter.Filter, error) {
 		Codecs: filter.SplitList(lf.codecs), VCodecs: filter.SplitList(lf.vcodecs), ACodecs: filter.SplitList(lf.acodecs),
 		Containers: filter.SplitList(lf.containers), Exts: filter.SplitList(lf.exts),
 		MinFPS: lf.minFPS, MaxFPS: lf.maxFPS, MinYear: lf.minYear, MaxYear: lf.maxYear,
-		Name: lf.name, Path: lf.path, Artist: lf.artist, Album: lf.album, Title: lf.title, Genre: lf.genre}
+		Name: lf.name, Path: lf.path, Artist: lf.artist, Album: lf.album, Title: lf.title, Genre: lf.genre,
+		Checks: filter.SplitList(lf.checks), Duplicates: lf.duplicates}
 	var err error
 	num := func(s string, fn func(string) (int64, error), dst *int64) {
 		if s != "" && err == nil {
@@ -247,6 +253,7 @@ func (a *app) listTable(files []catalog.File, fields []string, base string) {
 		fmt.Fprintln(a.stderr, ui.Dim.Render("no matching files"))
 		return
 	}
+	fields = dropEmptyDup(fields, files)
 	flex := flexColumn(fields)
 	cols := make([]ui.Column, len(fields))
 	for i, name := range fields {
@@ -321,6 +328,7 @@ type fileJSON struct {
 	Channels     int        `json:"channels,omitempty"`
 	Tags         *tagsJSON  `json:"tags,omitempty"`
 	ProbeError   string     `json:"probe_error,omitempty"`
+	Check        *checkJSON `json:"check,omitempty"`
 	ScannedAt    time.Time  `json:"scanned_at"`
 	MissingSince *time.Time `json:"missing_since,omitempty"`
 }
@@ -341,6 +349,9 @@ func toJSON(f catalog.File) fileJSON {
 		Width: m.Width, Height: m.Height, VideoCodec: m.VideoCodec, AudioCodec: m.AudioCodec,
 		Bitrate: m.Bitrate, VideoBitrate: m.VideoBitrate, AudioBitrate: m.AudioBitrate, FPS: m.FPS, SampleRate: m.SampleRate, Channels: m.Channels,
 		ProbeError: f.ProbeError, ScannedAt: f.ScannedAt.UTC(), MissingSince: f.MissingSince}
+	if f.Check.Status != "" {
+		j.Check = &checkJSON{f.Check.Status, f.Check.Level, f.Check.Detail, f.Check.At.UTC()}
+	}
 	if t := m.Tags; t != (probe.Tags{}) {
 		j.Tags = &tagsJSON{t.Artist, t.Album, t.Title, t.Genre, t.Track, t.Year}
 	}
@@ -355,4 +366,26 @@ func (a *app) listJSON(files []catalog.File) error {
 	enc := json.NewEncoder(a.stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(out)
+}
+
+type checkJSON struct {
+	Status    string    `json:"status"`
+	Level     string    `json:"level"`
+	Detail    string    `json:"detail,omitempty"`
+	CheckedAt time.Time `json:"checked_at"`
+}
+
+// dropEmptyDup removes the duplicate-marker column when no listed file has a known copy,
+// so it does not leave an empty gutter.
+func dropEmptyDup(fields []string, files []catalog.File) []string {
+	i := indexOf(fields, filter.FieldDup)
+	if i < 0 || len(fields) == 1 {
+		return fields
+	}
+	for _, f := range files {
+		if f.Copies > 1 {
+			return fields
+		}
+	}
+	return append(fields[:i:i], fields[i+1:]...)
 }

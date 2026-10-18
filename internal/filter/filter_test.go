@@ -70,7 +70,7 @@ func TestValidate(t *testing.T) {
 	bad := []Filter{
 		{Kind: "pdf"}, {MinSize: 2, MaxSize: 1}, {MinDurationMS: 2, MaxDurationMS: 1},
 		{MinRes: 1080, MaxRes: 720}, {MinFPS: 60, MaxFPS: 30}, {MinABitrate: 2, MaxABitrate: 1},
-		{ModifiedAfter: time.Unix(2, 0), ModifiedBefore: time.Unix(1, 0)},
+		{ModifiedAfter: time.Unix(2, 0), ModifiedBefore: time.Unix(1, 0)}, {Checks: []string{"broken"}},
 	}
 	for _, f := range bad {
 		if err := f.Validate(); err == nil {

@@ -4,7 +4,7 @@ Interactive audio/image/video cataloger and duplicate manager. Scans any directo
 recursively, keeps a persistent catalog of file and media metadata, finds duplicates at
 selectable depths, and trashes, deletes, or moves them safely.
 
-Status: phases 1-3 implemented and committed. Phases 4-5 not started.
+Status: phases 1-4 implemented (phase 4 uncommitted, pending review). Phase 5 not started.
 
 ## Goals
 
@@ -235,10 +235,34 @@ Measured on the share: full hashing ran at ~37 MB/s with 2 workers (6 large cand
 
 ## Phase 4: integrity check
 
-- Quick: ffprobe parses, container vs stream duration agree, decode near the end succeeds.
-  Images: full decode.
-- Full: `ffmpeg -v error -i f -f null -`, resumable like duplicate jobs.
-- Network errors recorded as unverified and retried, never reported as corruption.
+- `mediacat check [path]` (`just check-media`), `--full`, `--recheck`, `--type`, `--json`,
+  `-j`. Defaults in the config `check:` section.
+- Statuses: ok, damaged (decode errors or missing data), unreadable (not valid media or
+  nothing decodes), unverified (network error or timeout; retried next run, never reported
+  as damage). Stored per file with the size/mtime they apply to; a full result also counts
+  for quick runs. Ctrl-C keeps finished results.
+- Quick check: decode the first frame (always a keyframe, so cheap), then read packets
+  without decoding from 3s before the end; "partial file" or data ending more than 2s
+  short of the duration means truncated. Damage in the middle of a file needs `--full`.
+- Full check: `ffmpeg -f null` decode of the whole file with byte progress from
+  `-progress`; error count (first 200 lines kept) and first message recorded.
+- Images: full decode in Go (jpeg, png, gif, webp, bmp, tiff), ffmpeg for other formats.
+- `list --check damaged,unreadable`, `check` column/field.
+- Measured on Stash/Enhanced (578 files over SMB, 4 workers): 8.3 minutes, 2 real problems.
+  An earlier design (decode one second at the end with an accurate seek) took ~3.3 s and
+  ~6.5 CPU-seconds per file and produced false positives: seek-point reference errors and
+  "truncated" files that decode completely. Keyframe-only decoding (-skip_frame) was also
+  rejected: it misses truncation after the last keyframe and makes HEVC warn spuriously.
+
+## List additions after phase 4
+
+- Duplicate marker column `dup` (default first column, hidden when no listed file has one):
+  files whose current full hash matches another present file (hardlinks once). `--duplicates`
+  filter and `dup` sort field (by number of copies).
+- `vbitrate` in the default columns and highlighted (default 10M-50M).
+- Heat colors are never bold; 64-step gradient on 24-bit color terminals, 10 otherwise.
+- Unedited config files from an earlier release are upgraded in place to the current
+  template (identified by SHA-256 in `previousTemplates`).
 
 ## Phase 5: perceptual duplicates
 

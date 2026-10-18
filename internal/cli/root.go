@@ -59,14 +59,17 @@ func Execute(version string) int {
 func (a *app) run(version string, args []string) int {
 	// The config supplies flag defaults, so it is loaded before the commands are built.
 	a.configPath = configPathFrom(args)
-	cfg, created, err := config.Load(a.configPath)
+	cfg, status, err := config.Load(a.configPath)
 	if err != nil {
 		fmt.Fprintln(a.stderr, ui.Err.Render("error: ")+err.Error())
 		return 1
 	}
 	a.cfg = cfg
-	if created {
+	switch status {
+	case config.Created:
 		fmt.Fprintln(a.stderr, ui.Dim.Render("Created default config at "+a.configPath))
+	case config.Upgraded:
+		fmt.Fprintln(a.stderr, ui.Dim.Render("Updated "+a.configPath+" to the current defaults (it had not been edited)"))
 	}
 	root := a.rootCmd(version)
 	root.SetArgs(args)
@@ -138,7 +141,7 @@ Run without arguments for a dashboard of what has been cataloged.`,
 	f.IntVar(&a.staleDays, "stale-days", staleDefault, "warn when the catalog for a path is older than this many days (0 disables; env MEDIACAT_STALE_DAYS)")
 	f.BoolVar(&a.noColor, "no-color", false, "disable colored output (also honors NO_COLOR)")
 	f.StringVar(&a.stashCfg, "stash-config", a.cfg.StashConfig, "Stash config, read to remind you when files in Stash libraries change")
-	root.AddCommand(a.scanCmd(), a.listCmd(), a.infoCmd(), a.dupesCmd(), a.trashCmd(), a.historyCmd(), a.undoCmd())
+	root.AddCommand(a.scanCmd(), a.listCmd(), a.infoCmd(), a.dupesCmd(), a.trashCmd(), a.historyCmd(), a.undoCmd(), a.checkCmd())
 	return root
 }
 

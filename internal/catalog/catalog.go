@@ -123,6 +123,14 @@ var migrations = []string{
 		action       TEXT NOT NULL,
 		updated_at   INTEGER NOT NULL
 	);`,
+
+	// Integrity check results, valid only while check_size/check_mtime_ns match the file.
+	`ALTER TABLE files ADD COLUMN check_status TEXT NOT NULL DEFAULT '';
+	ALTER TABLE files ADD COLUMN check_level TEXT NOT NULL DEFAULT '';
+	ALTER TABLE files ADD COLUMN check_detail TEXT NOT NULL DEFAULT '';
+	ALTER TABLE files ADD COLUMN checked_at INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE files ADD COLUMN check_size INTEGER NOT NULL DEFAULT -1;
+	ALTER TABLE files ADD COLUMN check_mtime_ns INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // bitrateMigration is the schema version that added per-stream bitrates; rows probed
@@ -167,7 +175,10 @@ func Open(path string) (*DB, error) {
 // Close closes the database.
 func (c *DB) Close() error { return c.db.Close() }
 
-func (c *DB) migrate() error {
+func (c *DB) migrate() error { return c.migrateTo(len(migrations)) }
+
+// migrateTo applies migrations up to schema version target.
+func (c *DB) migrateTo(target int) error {
 	var v int
 	if err := c.db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil {
 		return err
@@ -175,7 +186,7 @@ func (c *DB) migrate() error {
 	if v > len(migrations) {
 		return fmt.Errorf("catalog schema version %d is newer than this mediacat (%d)", v, len(migrations))
 	}
-	for i := v; i < len(migrations); i++ {
+	for i := v; i < target; i++ {
 		tx, err := c.db.Begin()
 		if err != nil {
 			return err
@@ -192,7 +203,7 @@ func (c *DB) migrate() error {
 			return err
 		}
 	}
-	if v < bitrateMigration && len(migrations) >= bitrateMigration {
+	if v < bitrateMigration && target >= bitrateMigration {
 		return c.backfillBitrates()
 	}
 	return nil
@@ -313,6 +324,13 @@ type File struct {
 	// Content hashes; empty when not computed or no longer valid for the current size/mtime.
 	PartialHash string
 	FullHash    string
+
+	// Integrity check; empty when never checked or the file changed since.
+	Check Check
+
+	// Copies is how many files on disk share this file's full hash (hardlinks counted
+	// once); 0 when the file has no current full hash. Above 1 means a known duplicate.
+	Copies int
 
 	// Populated by queries that join volumes.
 	VolumeKey string
@@ -566,23 +584,33 @@ const fileCols = `f.id, f.volume_id, f.relpath, f.size, f.mtime_ns, f.inode, f.k
 	f.tag_artist, f.tag_album, f.tag_title, f.tag_track, f.tag_year, f.tag_genre,
 	f.probe_error, f.scanned_at, f.missing_since, v.key, v.last_mount_path, v.last_mount_root,
 	CASE WHEN f.hash_size = f.size AND f.hash_mtime_ns = f.mtime_ns THEN f.partial_hash ELSE '' END,
-	CASE WHEN f.hash_size = f.size AND f.hash_mtime_ns = f.mtime_ns THEN f.full_hash ELSE '' END`
+	CASE WHEN f.hash_size = f.size AND f.hash_mtime_ns = f.mtime_ns THEN f.full_hash ELSE '' END,
+	CASE WHEN ` + checkValid + ` THEN f.check_status ELSE '' END,
+	CASE WHEN ` + checkValid + ` THEN f.check_level ELSE '' END,
+	CASE WHEN ` + checkValid + ` THEN f.check_detail ELSE '' END,
+	CASE WHEN ` + checkValid + ` THEN f.checked_at ELSE 0 END,
+	` + copiesExpr
 
 func scanFile(rows interface{ Scan(...any) error }, extra ...any) (File, error) {
 	var f File
 	var inode, scanned int64
 	var missing sql.NullInt64
 	var mountPath, mountRoot string
+	var checkedAt int64
 	m := &f.Meta
 	dest := []any{&f.ID, &f.VolumeID, &f.RelPath, &f.Size, &f.MtimeNS, &inode, &f.Kind, &m.Container, &m.DurationMS,
 		&m.Width, &m.Height, &m.VideoCodec, &m.AudioCodec, &m.Bitrate, &m.VideoBitrate, &m.AudioBitrate, &m.FPS, &m.SampleRate, &m.Channels,
 		&m.Tags.Artist, &m.Tags.Album, &m.Tags.Title, &m.Tags.Track, &m.Tags.Year, &m.Tags.Genre,
-		&f.ProbeError, &scanned, &missing, &f.VolumeKey, &mountPath, &mountRoot, &f.PartialHash, &f.FullHash}
+		&f.ProbeError, &scanned, &missing, &f.VolumeKey, &mountPath, &mountRoot, &f.PartialHash, &f.FullHash,
+		&f.Check.Status, &f.Check.Level, &f.Check.Detail, &checkedAt, &f.Copies}
 	if err := rows.Scan(append(dest, extra...)...); err != nil {
 		return f, err
 	}
 	f.Inode = uint64(inode)
 	f.ScannedAt = time.Unix(scanned, 0)
+	if checkedAt > 0 {
+		f.Check.At = time.Unix(checkedAt, 0)
+	}
 	if missing.Valid {
 		t := time.Unix(missing.Int64, 0)
 		f.MissingSince = &t
@@ -690,6 +718,21 @@ func (c *DB) Query(volumeID int64, prefix string, flt filter.Filter) ([]File, er
 	contains("f.tag_album", flt.Album)
 	contains("f.tag_title", flt.Title)
 	contains("f.tag_genre", flt.Genre)
+	if flt.Duplicates {
+		add(copiesExpr + " > 1")
+	}
+	if len(flt.Checks) > 0 {
+		status := "CASE WHEN " + checkValid + " THEN f.check_status ELSE '' END"
+		var ors []string
+		for _, c := range flt.Checks {
+			if c == "unchecked" {
+				c = ""
+			}
+			ors = append(ors, status+" = ?")
+			args = append(args, c)
+		}
+		where = append(where, "("+strings.Join(ors, " OR ")+")")
+	}
 	if !flt.ModifiedAfter.IsZero() {
 		add("f.mtime_ns >= ?", flt.ModifiedAfter.UnixNano())
 	}
@@ -1080,3 +1123,42 @@ func (c *DB) DeleteDecisions(keys []string) error {
 	}
 	return nil
 }
+
+// Integrity statuses.
+const (
+	CheckOK         = "ok"
+	CheckDamaged    = "damaged"    // decodes, but with errors or missing data (e.g. truncated)
+	CheckUnreadable = "unreadable" // not valid media, or nothing decodes
+	CheckUnverified = "unverified" // the check itself failed (network, timeout); retried
+)
+
+// Check levels.
+const (
+	LevelQuick = "quick"
+	LevelFull  = "full"
+)
+
+// Check is a file's latest integrity result.
+type Check struct {
+	Status string
+	Level  string
+	Detail string
+	At     time.Time
+}
+
+const checkValid = `f.check_size = f.size AND f.check_mtime_ns = f.mtime_ns`
+
+// SetCheck records an integrity result for a file at the given size and mtime.
+func (t *Tx) SetCheck(id, size, mtimeNS int64, c Check) error {
+	_, err := t.tx.Exec(`UPDATE files SET check_status = ?, check_level = ?, check_detail = ?, checked_at = ?,
+		check_size = ?, check_mtime_ns = ? WHERE id = ?`, c.Status, c.Level, c.Detail, c.At.Unix(), size, mtimeNS, id)
+	return err
+}
+
+// copiesExpr counts present files with the same current full hash, counting hardlinks
+// (same volume and inode) once.
+const copiesExpr = `(CASE WHEN f.full_hash != '' AND f.hash_size = f.size AND f.hash_mtime_ns = f.mtime_ns THEN
+	(SELECT count(DISTINCT CASE WHEN d.inode != 0 THEN d.volume_id || ':' || d.inode ELSE 'id' || d.id END)
+	 FROM files d WHERE d.full_hash = f.full_hash AND d.full_hash != '' AND d.missing_since IS NULL
+	   AND d.hash_size = d.size AND d.hash_mtime_ns = d.mtime_ns)
+	ELSE 0 END)`

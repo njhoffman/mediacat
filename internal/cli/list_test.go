@@ -137,8 +137,8 @@ func TestListHighlightsLargeValues(t *testing.T) {
 
 	out, _ := h.ok("list", h.dir, "--name", "clip", "--columns", "size,duration,res,name")
 	line := strings.Split(strings.TrimSpace(out), "\n")[1]
-	if strings.Count(line, "\x1b[") < 3 || !strings.Contains(line, "\x1b[1;") {
-		t.Errorf("clip should have three bold highlighted cells: %q", line)
+	if strings.Count(line, "\x1b[") < 3 || strings.Contains(line, "\x1b[1;") || strings.Contains(line, "\x1b[1m") {
+		t.Errorf("clip should have three highlighted, non-bold cells: %q", line)
 	}
 	out, _ = h.ok("list", h.dir, "--name", "pic", "--columns", "res,name")
 	line = strings.Split(strings.TrimSpace(out), "\n")[1]

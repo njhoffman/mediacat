@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -314,31 +315,73 @@ func TestLatestCompleteScans(t *testing.T) {
 }
 
 func TestBitrateBackfillOnUpgrade(t *testing.T) {
+	// Build a genuine version-2 catalog, before stream bitrates existed.
 	path := filepath.Join(t.TempDir(), "c.db")
+	sqldb, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := &DB{db: sqldb, Path: path}
+	if err := old.migrateTo(2); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"format":{"format_name":"mov,mp4","duration":"10","bit_rate":"5000000"},
+		"streams":[{"codec_type":"video","codec_name":"h264","bit_rate":"4800000"},{"codec_type":"audio","codec_name":"aac","bit_rate":"192000"}]}`
+	for _, q := range []string{
+		`INSERT INTO volumes (id, key, source, fstype, last_mount_path, last_seen_at) VALUES (1, 'k', 's', 'ext4', '/x', 0)`,
+		`INSERT INTO files (volume_id, relpath, ext, size, mtime_ns, kind, scanned_at, probe_json) VALUES (1, 'a.mp4', 'mp4', 1, 1, 'video', 0, '` + raw + `')`,
+	} {
+		if _, err := sqldb.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sqldb.Close()
+
 	db, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	vol, _ := db.UpsertVolume(volume.Volume{Key: "k", MountPoint: "/x", MountRoot: "/"}, t0)
-	raw := []byte(`{"format":{"format_name":"mov,mp4","duration":"10","bit_rate":"5000000"},
-		"streams":[{"codec_type":"video","codec_name":"h264","bit_rate":"4800000"},{"codec_type":"audio","codec_name":"aac","bit_rate":"192000"}]}`)
-	put(t, db, File{VolumeID: vol, RelPath: "a.mp4", Size: 1, MtimeNS: 1, Kind: filter.KindVideo, Meta: probe.Result{Raw: raw}})
-	// Turn the catalog back into a version-2 one: no bitrate columns.
-	for _, q := range []string{`ALTER TABLE files DROP COLUMN video_bitrate`, `ALTER TABLE files DROP COLUMN audio_bitrate`, `DROP TABLE review_decisions`, `PRAGMA user_version = 2`} {
-		if _, err := db.db.Exec(q); err != nil {
-			t.Fatal(err)
-		}
-	}
-	db.Close()
-
-	db, err = Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
 	defer db.Close()
+	f, _ := db.GetFile(1, "a.mp4")
+	if f == nil || f.Meta.VideoBitrate != 4_800_000 || f.Meta.AudioBitrate != 192_000 {
+		t.Errorf("backfill: %+v", f)
+	}
+}
+
+func TestCheckResults(t *testing.T) {
+	db, vol := openTest(t)
+	put(t, db, video(vol, "a.mp4", 10, 1, 1, 1, "h264"))
+	k, _ := db.Known(vol, "")
+	tx, _ := db.Begin()
+	tx.SetCheck(k["a.mp4"].ID, 10, 1, Check{Status: CheckDamaged, Level: LevelFull, Detail: "3 decode errors", At: t0})
+	tx.Commit()
 	f, _ := db.GetFile(vol, "a.mp4")
-	if f.Meta.VideoBitrate != 4_800_000 || f.Meta.AudioBitrate != 192_000 {
-		t.Errorf("backfill: video=%d audio=%d", f.Meta.VideoBitrate, f.Meta.AudioBitrate)
+	if f.Check.Status != CheckDamaged || f.Check.Level != LevelFull || !f.Check.At.Equal(t0) {
+		t.Errorf("check = %+v", f.Check)
+	}
+	// A changed file no longer reports the old result.
+	changed := video(vol, "a.mp4", 11, 1, 1, 1, "h264")
+	put(t, db, changed)
+	if f, _ := db.GetFile(vol, "a.mp4"); f.Check.Status != "" {
+		t.Errorf("stale check reported: %+v", f.Check)
+	}
+}
+
+func TestQueryByCheckStatus(t *testing.T) {
+	db, vol := openTest(t)
+	put(t, db, video(vol, "a.mp4", 1, 1, 1, 1, "h264"), video(vol, "b.mp4", 1, 1, 1, 1, "h264"), video(vol, "c.mp4", 1, 1, 1, 1, "h264"))
+	k, _ := db.Known(vol, "")
+	tx, _ := db.Begin()
+	tx.SetCheck(k["a.mp4"].ID, 1, 1, Check{Status: CheckOK, Level: LevelQuick, At: t0})
+	tx.SetCheck(k["b.mp4"].ID, 1, 1, Check{Status: CheckDamaged, Level: LevelFull, At: t0})
+	tx.Commit()
+	for spec, want := range map[string][]string{
+		"damaged": {"b.mp4"}, "ok,damaged": {"a.mp4", "b.mp4"}, "unchecked": {"c.mp4"},
+	} {
+		got, _ := db.Query(vol, "", filter.Filter{Checks: strings.Split(spec, ",")})
+		if !equal(paths(got), want) {
+			t.Errorf("%s: %v", spec, paths(got))
+		}
 	}
 }
 
@@ -358,5 +401,36 @@ func TestReviewDecisions(t *testing.T) {
 	db.DeleteDecisions([]string{"h1"})
 	if got, _ := db.LoadDecisions([]string{"h1", "h2"}); len(got) != 1 {
 		t.Errorf("after delete: %+v", got)
+	}
+}
+
+func TestCopiesCount(t *testing.T) {
+	db, vol := openTest(t)
+	mk := func(rel string, inode uint64) File {
+		f := video(vol, rel, 100, 1, 1, 1, "h264")
+		f.Inode = inode
+		return f
+	}
+	put(t, db, mk("a.mp4", 1), mk("b.mp4", 2), mk("hardlink-of-a.mp4", 1), mk("gone.mp4", 3), mk("other.mp4", 4))
+	k, _ := db.Known(vol, "")
+	tx, _ := db.Begin()
+	for _, rel := range []string{"a.mp4", "b.mp4", "hardlink-of-a.mp4", "gone.mp4"} {
+		tx.SetHashes(k[rel].ID, 100, 1, "p", "samehash")
+	}
+	tx.MarkMissing(k["gone.mp4"].ID, t0)
+	tx.Commit()
+	got := map[string]int{}
+	fs, _ := db.Query(vol, "", filter.Filter{})
+	for _, f := range fs {
+		got[f.RelPath] = f.Copies
+	}
+	// a, b and the hardlink share content; the hardlink is the same file as a, and the
+	// missing copy does not count.
+	if got["a.mp4"] != 2 || got["b.mp4"] != 2 || got["other.mp4"] != 0 {
+		t.Errorf("copies = %v", got)
+	}
+	dups, _ := db.Query(vol, "", filter.Filter{Duplicates: true})
+	if len(dups) != 3 {
+		t.Errorf("--duplicates = %v", paths(dups))
 	}
 }

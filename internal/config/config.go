@@ -3,6 +3,7 @@ package config
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -16,7 +17,9 @@ import (
 	"github.com/njhoffman/mediacat/internal/filter"
 )
 
-// Template is written when no config exists. It must parse to Default().
+// Template is written when no config exists. It must parse to Default(). When changing it,
+// add the SHA-256 of the version being replaced to previousTemplates so unedited copies
+// of it are upgraded.
 const Template = `# mediacat configuration. Command-line flags override everything here.
 
 # Catalog database. Kept on local disk so listings work while drives are unplugged.
@@ -46,6 +49,13 @@ scan:
     - "#recycle"
     - lost+found
 
+check:
+  # quick decodes a second at the start and near the end (catches truncated files, reads
+  # little); full decodes everything (finds damage anywhere, reads the whole file).
+  level: quick
+  # Parallel checks; 0 picks 4, or 2 for full checks on network or spinning disks.
+  workers: 0
+
 dupes:
   # size, partial or full. Only full can trash, move or delete.
   depth: full
@@ -73,14 +83,16 @@ dupes:
 list:
   # Fields for sort and columns: path name dir ext type size duration res width height fps
   # bitrate vbitrate abitrate codec vcodec acodec container channels samplerate mtime
-  # scanned artist album title track year genre error
+  # scanned artist album title track year genre error check dup
   #
   # Default sort: comma-separated fields, "-" prefix for descending, e.g. -size,duration
   sort: path
-  # Columns shown by default, and for --type audio.
-  columns: size,duration,res,codec,path
-  audio_columns: size,duration,acodec,abitrate,artist,title,path
-  # Values above "warn" are tinted yellow, shading to bold red at "max" and beyond.
+  # Columns shown by default, and for --type audio. "dup" marks files with a known identical
+  # copy (found by mediacat dupes).
+  columns: dup,size,duration,res,codec,vbitrate,path
+  audio_columns: dup,size,duration,acodec,abitrate,artist,title,path
+  # Values above "warn" are tinted pale yellow, shading to red at "max" and beyond (with a
+  # finer gradient on 24-bit color terminals).
   # Leave warn empty to turn highlighting off for that column.
   highlight:
     size:
@@ -92,6 +104,11 @@ list:
     resolution:
       warn: 1920x1080
       max: 3840x2160
+    # Video stream bitrate. 10 Mb/s is already generous for 1080p (streaming services use
+    # 5-8); 4K remuxes run 40-80, so 50 Mb/s and above gets the strongest color.
+    vbitrate:
+      warn: 10M
+      max: 50M
 `
 
 // Range is a highlight threshold pair as written in the file.
@@ -110,6 +127,10 @@ type Config struct {
 		ProbeTimeout string   `yaml:"probe_timeout"`
 		Exclude      []string `yaml:"exclude"`
 	} `yaml:"scan"`
+	Check struct {
+		Level   string `yaml:"level"`
+		Workers int    `yaml:"workers"`
+	} `yaml:"check"`
 	Dupes struct {
 		Depth          string   `yaml:"depth"`
 		Keep           string   `yaml:"keep"`
@@ -129,6 +150,7 @@ type Config struct {
 			Size       Range `yaml:"size"`
 			Duration   Range `yaml:"duration"`
 			Resolution Range `yaml:"resolution"`
+			VBitrate   Range `yaml:"vbitrate"`
 		} `yaml:"highlight"`
 	} `yaml:"list"`
 
@@ -160,6 +182,7 @@ type Highlights struct {
 	Size       Scale // bytes
 	Duration   Scale // milliseconds
 	Resolution Scale // width * height
+	VBitrate   Scale // bits/s
 }
 
 // DefaultPath is $XDG_CONFIG_HOME/mediacat.yaml (~/.config/mediacat.yaml).
@@ -181,25 +204,47 @@ func Default() Config {
 	return c
 }
 
+// previousTemplates holds the SHA-256 of every Template an earlier release wrote. A file
+// that still matches one was never edited, so it is safe to replace with the current one.
+var previousTemplates = map[string]bool{
+	"d85d50d42b7e5317dea4d4e94051fc8307e8c392da956df3f3d30ae63b53fc1c": true,
+	"c5f5aad43b613cc32fd10741a45944ad4ac87265eff377e6e55d05eeb5a151ac": true,
+}
+
+// Status reports what Load did to the file.
+type Status int
+
+// Load outcomes.
+const (
+	Loaded   Status = iota // read as is
+	Created                // written with the defaults
+	Upgraded               // an unedited older default replaced with the current one
+)
+
 // Load reads the config at path, writing the default template first when it does not
-// exist. created reports whether the file was written. If it cannot be written the
-// defaults are used and err is nil but created is false.
-func Load(path string) (cfg Config, created bool, err error) {
+// exist and refreshing an unedited default from an earlier release. If the file cannot
+// be written the defaults are still used.
+func Load(path string) (cfg Config, status Status, err error) {
 	b, err := os.ReadFile(path)
+	if err == nil && previousTemplates[fmt.Sprintf("%x", sha256.Sum256(b))] {
+		if os.WriteFile(path, []byte(Template), 0o644) == nil {
+			b, status = []byte(Template), Upgraded
+		}
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		b = []byte(Template)
-		if mkErr := os.MkdirAll(filepath.Dir(path), 0o755); mkErr == nil {
-			created = os.WriteFile(path, b, 0o644) == nil
+		if mkErr := os.MkdirAll(filepath.Dir(path), 0o755); mkErr == nil && os.WriteFile(path, b, 0o644) == nil {
+			status = Created
 		}
 	} else if err != nil {
-		return cfg, false, err
+		return cfg, Loaded, err
 	}
 	cfg, err = parse(b)
 	if err != nil {
-		return cfg, false, fmt.Errorf("%s: %w", path, err)
+		return cfg, Loaded, fmt.Errorf("%s: %w", path, err)
 	}
 	cfg.Path = path
-	return cfg, created, nil
+	return cfg, status, nil
 }
 
 // parse decodes the template and then b over it, so keys missing from b keep their
@@ -244,6 +289,9 @@ func (c *Config) finish() error {
 			}
 		}
 	}
+	if c.Check.Level != "quick" && c.Check.Level != "full" {
+		return fmt.Errorf("check.level: want quick or full, got %q", c.Check.Level)
+	}
 	if c.List.Sort != "" {
 		if _, err := filter.ParseSort(c.List.Sort); err != nil {
 			return fmt.Errorf("list.sort: %w", err)
@@ -259,6 +307,12 @@ func (c *Config) finish() error {
 	}
 	if c.Highlights.Duration, err = scale("duration", h.Duration, func(s string) (float64, error) {
 		n, err := filter.ParseDuration(s)
+		return float64(n), err
+	}); err != nil {
+		return err
+	}
+	if c.Highlights.VBitrate, err = scale("vbitrate", h.VBitrate, func(s string) (float64, error) {
+		n, err := filter.ParseBitrate(s)
 		return float64(n), err
 	}); err != nil {
 		return err

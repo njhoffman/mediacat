@@ -57,3 +57,38 @@ func run(t testing.TB, args ...string) {
 		t.Fatalf("ffmpeg %v: %v\n%s", args, err, out)
 	}
 }
+
+// Broken are fixtures for integrity checks.
+type Broken struct {
+	Good      string // 20s video with the index first (faststart)
+	Truncated string // first 60% of Good: index intact, data missing
+	Corrupt   string // Good with random bytes over its middle
+	Image     string // valid png
+	BadImage  string // jpeg cut in half
+}
+
+// GenerateBroken writes integrity fixtures into dir.
+func GenerateBroken(t testing.TB, dir string) Broken {
+	t.Helper()
+	Generate(t, t.TempDir()) // skips when ffmpeg is missing
+	b := Broken{
+		Good: filepath.Join(dir, "good.mp4"), Truncated: filepath.Join(dir, "truncated.mp4"),
+		Corrupt: filepath.Join(dir, "corrupt.mp4"), Image: filepath.Join(dir, "ok.png"), BadImage: filepath.Join(dir, "cut.jpg"),
+	}
+	run(t, "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=20", "-f", "lavfi", "-i", "sine=duration=20",
+		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart", b.Good)
+	run(t, "-f", "lavfi", "-i", "testsrc=size=64x48:duration=1", "-frames:v", "1", b.Image)
+	jpg := filepath.Join(dir, "full.jpg")
+	run(t, "-f", "lavfi", "-i", "testsrc=size=320x240:duration=1", "-frames:v", "1", jpg)
+	data, _ := os.ReadFile(b.Good)
+	os.WriteFile(b.Truncated, data[:len(data)*6/10], 0o644)
+	bad := append([]byte(nil), data...)
+	for i := len(bad) / 2; i < len(bad)/2+20000 && i < len(bad); i++ {
+		bad[i] = byte(i*7919) ^ 0x5a
+	}
+	os.WriteFile(b.Corrupt, bad, 0o644)
+	j, _ := os.ReadFile(jpg)
+	os.WriteFile(b.BadImage, j[:len(j)/2], 0o644)
+	os.Remove(jpg)
+	return b
+}

@@ -225,3 +225,30 @@ func TestDupesFlagErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestListMarksDuplicates(t *testing.T) {
+	h, paths := dupeFixture(t)
+	out, _ := h.ok("list", h.dir)
+	if strings.Contains(out, dupMarker) {
+		t.Errorf("no duplicates are known before dupes runs:\n%s", out)
+	}
+	h.ok("dupes", h.dir)
+	out, _ = h.ok("list", h.dir)
+	marked := 0
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(l, dupMarker) {
+			marked++
+			if !strings.Contains(l, "clip") {
+				t.Errorf("wrong file marked: %q", l)
+			}
+		}
+	}
+	if marked != 3 {
+		t.Errorf("marked %d files, want 3:\n%s", marked, out)
+	}
+	out, _ = h.ok("list", h.dir, "--duplicates", "--sort", "-dup,name", "--columns", "dup,name")
+	if lines := strings.Split(strings.TrimSpace(out), "\n"); len(lines) != 4 || !strings.HasPrefix(lines[1], dupMarker+"  clip (1).mp4") {
+		t.Errorf("--duplicates:\n%s", out)
+	}
+	_ = paths
+}

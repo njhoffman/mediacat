@@ -94,6 +94,10 @@ dupes *ARGS: build
 review *ARGS: build
     {{bin}} {{dbflag}} dupes "$@" --review
 
+# Check media for corruption (quick; --full decodes everything), e.g. just check /mnt/nfs/Stash
+check-media *ARGS: build
+    {{bin}} {{dbflag}} check "$@"
+
 # Show the trash on a path's drive; --empty to purge what mediacat put there
 trash *ARGS: build
     {{bin}} {{dbflag}} trash "$@"
