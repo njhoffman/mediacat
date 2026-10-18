@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -75,6 +76,11 @@ func Value(f File, field string) (num float64, str string, numeric, known bool) 
 		return t(f.ProbeError)
 	case filter.FieldCheck:
 		return t(f.Check.Status)
+	case filter.FieldPHash:
+		if f.PHash.OK() {
+			return t(fmt.Sprintf("%016x", f.PHash.Value))
+		}
+		return t("")
 	case filter.FieldDup:
 		if f.Copies > 1 {
 			return float64(f.Copies), "", true, true

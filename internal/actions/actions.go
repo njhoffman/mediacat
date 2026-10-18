@@ -31,6 +31,7 @@ type Plan struct {
 	MoveTo  string
 	Ops     []Op
 	Volumes map[string]volume.Volume // by key, for files in the plan
+	Similar bool                     // some groups are perceptual matches, not identical copies
 }
 
 // Bytes is the total size of the files the plan touches.
@@ -50,6 +51,7 @@ func BuildPlan(kind, root, moveTo string, groups []dupes.Group, vols map[string]
 		if !g.Confirmed {
 			return p, errors.New("actions need a full-hash comparison (--depth full)")
 		}
+		p.Similar = p.Similar || g.Similar
 		keeper := g.Files[g.Keep]
 		for i, f := range g.Files {
 			if i == g.Keep {

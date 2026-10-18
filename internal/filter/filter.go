@@ -91,6 +91,7 @@ const (
 	FieldError      = "error"
 	FieldCheck      = "check"
 	FieldDup        = "dup"
+	FieldPHash      = "phash"
 )
 
 // Fields lists every field, in the order help text shows them.
@@ -99,6 +100,7 @@ var Fields = []string{
 	FieldHeight, FieldFPS, FieldBitrate, FieldVBitrate, FieldABitrate, FieldCodec, FieldVCodec, FieldACodec,
 	FieldContainer, FieldChannels, FieldSampleRate, FieldMtime, FieldScanned, FieldArtist, FieldAlbum,
 	FieldTitle, FieldTrack, FieldYear, FieldGenre, FieldError, FieldCheck, FieldDup,
+	FieldPHash,
 }
 
 // CheckStatuses are the values --check accepts.

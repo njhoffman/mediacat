@@ -182,3 +182,29 @@ func TestBurstOfKeys(t *testing.T) {
 		t.Error("keys after q must be ignored")
 	}
 }
+
+func TestSimilarGroups(t *testing.T) {
+	ui.DisableColor()
+	g := dupes.Group{Key: "similar:x", Confirmed: true, Similar: true, Files: []catalog.File{
+		{AbsPath: "/lib/a.mp4", Size: 100, FullHash: "h1", PHash: catalog.PHash{Value: 0, Source: catalog.PHashMediacat}},
+		{AbsPath: "/lib/b.mp4", Size: 300, FullHash: "h2", PHash: catalog.PHash{Value: 0b111, Source: catalog.PHashStash}},
+		{AbsPath: "/lib/c.mp4", Size: 100, FullHash: "h1", PHash: catalog.PHash{Value: 0, Source: catalog.PHashMediacat}},
+	}}
+	gs := []dupes.Group{g}
+	m := New(gs, []Choice{{Keep: 1}}, Options{})
+	v := m.View()
+	for _, want := range []string{"Review similar files", "3 similar files, 200 B reclaimable", "3 bits"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("view missing %q:\n%s", want, v)
+		}
+	}
+	// Keeping a.mp4 instead: c.mp4 is then byte-identical to the keeper, b.mp4 3 bits away.
+	m = press(m, "g", " ", "t")
+	v = m.View()
+	if !strings.Contains(v, "identical") || !strings.Contains(v, "400 B reclaimable") {
+		t.Errorf("after keeping a.mp4:\n%s", v)
+	}
+	if tt := Summarize(gs, m.Choices()); tt.Bytes[catalog.ActionTrash] != 400 {
+		t.Errorf("summary bytes %d, want the sizes of the copies not kept", tt.Bytes[catalog.ActionTrash])
+	}
+}

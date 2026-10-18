@@ -19,10 +19,17 @@ var Rules = map[string]string{
 	"newest":   "keep the newest modification time",
 	"shortest": "keep the shortest path",
 	"longest":  "keep the longest path",
+	"res":      "keep the highest resolution (pixel count)",
+	"bitrate":  "keep the highest video bitrate (overall bitrate when unknown)",
+	"size":     "keep the largest file",
 }
 
 // DefaultPolicy is used when no --keep is given.
 const DefaultPolicy = "prefer,avoid,paths,plain,oldest,shortest"
+
+// DefaultSimilarPolicy is used for similar (not identical) groups when no --keep is
+// given: the copies differ, so quality comes first.
+const DefaultSimilarPolicy = "res,bitrate,prefer,avoid,paths,plain,size,oldest"
 
 // Policy chooses which copy in a group to keep.
 type Policy struct {
@@ -123,6 +130,15 @@ func (p Policy) score(rule string, f catalog.File) int64 {
 		return int64(len(f.AbsPath))
 	case "longest":
 		return -int64(len(f.AbsPath))
+	case "res":
+		return -int64(f.Meta.Width) * int64(f.Meta.Height)
+	case "bitrate":
+		if f.Meta.VideoBitrate > 0 {
+			return -f.Meta.VideoBitrate
+		}
+		return -f.Meta.Bitrate
+	case "size":
+		return -f.Size
 	}
 	return 0
 }

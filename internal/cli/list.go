@@ -329,6 +329,9 @@ type fileJSON struct {
 	Tags         *tagsJSON  `json:"tags,omitempty"`
 	ProbeError   string     `json:"probe_error,omitempty"`
 	Check        *checkJSON `json:"check,omitempty"`
+	PHash        string     `json:"phash,omitempty"`
+	PHashSource  string     `json:"phash_source,omitempty"`
+	PHashError   string     `json:"phash_error,omitempty"`
 	ScannedAt    time.Time  `json:"scanned_at"`
 	MissingSince *time.Time `json:"missing_since,omitempty"`
 }
@@ -349,6 +352,10 @@ func toJSON(f catalog.File) fileJSON {
 		Width: m.Width, Height: m.Height, VideoCodec: m.VideoCodec, AudioCodec: m.AudioCodec,
 		Bitrate: m.Bitrate, VideoBitrate: m.VideoBitrate, AudioBitrate: m.AudioBitrate, FPS: m.FPS, SampleRate: m.SampleRate, Channels: m.Channels,
 		ProbeError: f.ProbeError, ScannedAt: f.ScannedAt.UTC(), MissingSince: f.MissingSince}
+	if f.PHash.OK() {
+		j.PHash = fmt.Sprintf("%016x", f.PHash.Value)
+	}
+	j.PHashSource, j.PHashError = f.PHash.Source, f.PHash.Error
 	if f.Check.Status != "" {
 		j.Check = &checkJSON{f.Check.Status, f.Check.Level, f.Check.Detail, f.Check.At.UTC()}
 	}

@@ -350,7 +350,7 @@ func Summarize(groups []dupes.Group, choices []Choice) Totals {
 		a := choices[i].Action
 		t.Groups[a]++
 		t.Files[a] += len(g.Files) - 1
-		t.Bytes[a] += g.Reclaimable()
+		t.Bytes[a] += g.ReclaimableKeeping(choices[i].Keep)
 	}
 	return t
 }
@@ -371,8 +371,12 @@ func (m Model) View() string {
 		}
 		return actionStyle(kind).Render(s)
 	}
+	title := "Review duplicates"
+	if m.groups[0].Similar {
+		title = "Review similar files"
+	}
 	status := fmt.Sprintf("%s  group %d/%d   %s  %s  %s  %s",
-		ui.Title.Render("Review duplicates"), m.g+1, len(m.groups),
+		ui.Title.Render(title), m.g+1, len(m.groups),
 		part(catalog.ActionTrash, "trash"), part(catalog.ActionMove, "move"),
 		part(catalog.ActionDelete, "delete"), ui.Dim.Render(fmt.Sprintf("undecided groups %d", t.Groups[""])))
 	b.WriteString(status + "\n")
@@ -423,6 +427,9 @@ func (m Model) lines() []string {
 	for gi, g := range m.groups {
 		c := m.choices[gi]
 		head := fmt.Sprintf("#%d  %d copies of %s", gi+1, len(g.Files), ui.Bytes(g.Size))
+		if g.Similar {
+			head = fmt.Sprintf("#%d  %d similar files, %s reclaimable", gi+1, len(g.Files), ui.Bytes(g.ReclaimableKeeping(c.Keep)))
+		}
 		act := actionStyle(c.Action).Render(describe(c.Action))
 		if c.Action == catalog.ActionMove {
 			act += ui.Dim.Render(" to " + m.opts.MoveTo)
@@ -444,6 +451,9 @@ func (m Model) fileLine(gi, fi int, f catalog.File, c Choice) string {
 	meta := f.Meta
 	info := fmt.Sprintf("%s  %9s  %7s  %-5s %10s", time.Unix(0, f.MtimeNS).Format("2006-01-02"),
 		ui.Res(meta.Width, meta.Height), ui.Duration(meta.DurationMS), short(meta.VideoCodec, 5), ui.Bitrate(meta.VideoBitrate))
+	if g := m.groups[gi]; g.Similar {
+		info = fmt.Sprintf("%9s  %-9s  ", ui.Bytes(f.Size), Likeness(g, fi, c.Keep)) + info
+	}
 	room := max(m.width-len(label)-len(info)-7, 20)
 	path := ui.TruncateMiddle(f.AbsPath, room)
 	if gi == m.g && fi == m.f {
@@ -452,6 +462,18 @@ func (m Model) fileLine(gi, fi int, f catalog.File, c Choice) string {
 		return cursorStyle.Render(row + strings.Repeat(" ", max(m.width-lipgloss.Width(row), 0)))
 	}
 	return "  " + style.Render(label) + "  " + ui.Dim.Render(info) + "  " + path
+}
+
+// Likeness describes how Files[i] compares with the kept copy in a similar group:
+// "identical" for the same content, otherwise the phash distance ("" for the keeper).
+func Likeness(g dupes.Group, i, keep int) string {
+	switch {
+	case i == keep:
+		return ""
+	case g.Identical(i, keep):
+		return "identical"
+	}
+	return fmt.Sprintf("%d bits", g.Distance(i, keep))
 }
 
 func short(s string, n int) string {

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/bits"
 	"os"
 	"sort"
 	"sync"
@@ -43,17 +44,39 @@ func (d Depth) String() string {
 }
 
 // Group is a set of files with identical content (or identical size/partial hash at
-// lower depths). Files[Keep] is the copy chosen to keep.
+// lower depths, or similar perceptual hashes). Files[Keep] is the copy chosen to keep.
 type Group struct {
 	Key       string
-	Size      int64
+	Size      int64 // the common size; for similar groups, the size of the initial keeper
 	Files     []catalog.File
 	Keep      int
-	Confirmed bool // full-hash match: safe to act on
+	Confirmed bool // full-hash or perceptual match: may be acted on
+	Similar   bool // perceptual match: the copies look alike but are not identical
 }
 
-// Reclaimable is the space freed by removing every copy but one.
-func (g Group) Reclaimable() int64 { return g.Size * int64(len(g.Files)-1) }
+// Reclaimable is the space freed by removing every copy but the kept one.
+func (g Group) Reclaimable() int64 { return g.ReclaimableKeeping(g.Keep) }
+
+// ReclaimableKeeping is the space freed by removing every copy but Files[keep].
+func (g Group) ReclaimableKeeping(keep int) int64 {
+	var n int64
+	for i, f := range g.Files {
+		if i != keep {
+			n += f.Size
+		}
+	}
+	return n
+}
+
+// Distance is how many perceptual-hash bits Files[i] differs from Files[keep] by.
+func (g Group) Distance(i, keep int) int {
+	return bits.OnesCount64(g.Files[i].PHash.Value ^ g.Files[keep].PHash.Value)
+}
+
+// Identical reports whether Files[i] has the same full hash as Files[keep].
+func (g Group) Identical(i, keep int) bool {
+	return g.Files[i].FullHash != "" && g.Files[i].FullHash == g.Files[keep].FullHash
+}
 
 // Event reports hashing progress.
 type Event struct {
@@ -83,6 +106,14 @@ type Result struct {
 	Deferred    []Failure
 	Failed      []Failure
 	Interrupted bool
+
+	// Similar searches only.
+	Similar     bool
+	Distance    int       // largest Hamming distance treated as similar
+	FromStash   int       // compared files whose phash came from Stash's database
+	Unhashable  []Failure // files no frame can be hashed from (from earlier runs or this one)
+	SmallImages int       // images below the minimum size, not compared
+	Skipped     int       // files of kinds that are not compared (audio)
 }
 
 // Options configure a search.
@@ -117,24 +148,7 @@ func (f *Finder) Find(ctx context.Context, files []catalog.File) (*Result, error
 	f = &Finder{DB: f.DB, Options: o} // stages below read the defaulted options
 	res := &Result{Depth: o.Depth}
 
-	var avail []*catalog.File
-	seenInode := map[inodeKey]bool{}
-	for i := range files {
-		fl := &files[i]
-		if fl.AbsPath == "" {
-			res.Unavailable++
-			continue
-		}
-		if fl.Inode != 0 {
-			k := inodeKey{fl.VolumeID, fl.Inode}
-			if seenInode[k] {
-				res.Hardlinks++
-				continue
-			}
-			seenInode[k] = true
-		}
-		avail = append(avail, fl)
-	}
+	avail := available(files, res)
 
 	groups := groupBy(avail, func(fl *catalog.File) string { return fmt.Sprint(fl.Size) })
 	for _, g := range groups {
@@ -175,6 +189,29 @@ func (f *Finder) Find(ctx context.Context, files []catalog.File) (*Result, error
 		return a.Key < b.Key
 	})
 	return res, nil
+}
+
+// available returns the files on mounted volumes, one path per inode.
+func available(files []catalog.File, res *Result) []*catalog.File {
+	var avail []*catalog.File
+	seenInode := map[inodeKey]bool{}
+	for i := range files {
+		fl := &files[i]
+		if fl.AbsPath == "" {
+			res.Unavailable++
+			continue
+		}
+		if fl.Inode != 0 {
+			k := inodeKey{fl.VolumeID, fl.Inode}
+			if seenInode[k] {
+				res.Hardlinks++
+				continue
+			}
+			seenInode[k] = true
+		}
+		avail = append(avail, fl)
+	}
+	return avail
 }
 
 // groupBy buckets files by key and keeps buckets with more than one file, in a stable order.

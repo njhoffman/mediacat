@@ -4,7 +4,7 @@ Interactive audio/image/video cataloger and duplicate manager. Scans any directo
 recursively, keeps a persistent catalog of file and media metadata, finds duplicates at
 selectable depths, and trashes, deletes, or moves them safely.
 
-Status: phases 1-4 implemented. Phase 5 in progress.
+Status: phases 1-5 implemented.
 
 ## Goals
 
@@ -38,7 +38,7 @@ Status: phases 1-4 implemented. Phase 5 in progress.
 | Symlinks | Not followed by default. |
 | Missing files | Marked `missing_since`; pruned only with `--prune`. Unmounted volumes are marked unavailable, never pruned. |
 | Stash | Read-only use of Stash's database. mediacat never writes to it. After actions affecting Stash library paths, remind the user to run Stash's Clean task. |
-| Perceptual tiers | 3a (image phash) and Stash-compatible video phash in phase 5. Audio fingerprinting (3b) deferred. |
+| Perceptual tiers | 3a (image phash) and Stash-compatible video phash (phase 5, done). Audio fingerprinting (3b) deferred. |
 
 ## Environment notes
 
@@ -207,9 +207,10 @@ Measured on the share: full hashing ran at ~37 MB/s with 2 workers (6 large cand
   text, modified date), multi-key `--sort` with "-" for descending (unknown values last),
   and `--columns` (full list, or +field/-field adjustments; sorted fields are added unless
   the columns are given outright). Defaults come from `list.columns` / `list.audio_columns`.
-- Size, duration and resolution cells shade pale yellow to bold red between
-  `list.highlight.*.warn` and `.max` (defaults 500M-4G, 30m-2h, 1920x1080-3840x2160 by
-  pixel count).
+- Size, duration and resolution cells shade pale yellow to red (never bold) between
+  `list.highlight.*.warn` and `.max` (defaults 1G-4G, 1h-3h, 1920x1080-3840x2160 by
+  pixel count; raised from 500M and 30m-2h on 2026-10-18 after those tinted 20-26% of
+  the real library).
 - Dupes keep rule `paths` with `dupes.preferred_paths` (default `/sorted`, `^incoming`):
   case-insensitive substrings, "^" avoids; an avoided match outweighs a preferred one.
 - Per-stream video and audio bitrates are recorded (stream `bit_rate`, else mkvmerge `BPS`
@@ -266,11 +267,49 @@ Measured on the share: full hashing ran at ~37 MB/s with 2 workers (6 large cand
 
 ## Phase 5: perceptual duplicates
 
-- 3a: image pHash/dHash with Hamming threshold.
-- Video: reproduce Stash's phash algorithm (25 frames tiled 5x5, `goimagehash`
-  PerceptionHash, 64-bit) so values are directly comparable. Use Stash's stored phash when
-  the file's size and mtime match Stash's record; compute otherwise.
-- Similarity levels by Hamming distance (exact/high/medium/low), mirroring Stash's.
+- `mediacat dupes [path] --similar[=LEVEL]` (`just similar`): videos and images that look
+  alike. Levels by Hamming distance between 64-bit phashes, as in Stash: exact 0, high 4
+  (default, `dupes.similar`), medium 8, low 10, or a number from 0 to 32. Report, `--json`,
+  `--export`, `--review` and trash/move work as for exact duplicates.
+- Video phash reproduces Stash's algorithm exactly: 25 frames from 5% to 95% of the
+  duration (rounded to hundredths, as Stash does), each `ffmpeg -ss T -i F -frames:v 1
+  -vf scale=160:-2 -c:v bmp -f rawvideo -` (fast seek, falling back to accurate seeks after
+  a failure), tiled 5x5 with `disintegration/imaging`, then `goimagehash.PerceptionHash`.
+  Verified against Stash's stored values: distance 0 on 14 of 14 sampled files, using
+  mediacat's own catalog durations.
+- Stash reuse: Stash's database (path from `database:` in its config) is opened read-only
+  (`mode=ro`, `query_only`) and its video phashes are used when Stash's path, size and
+  mtime (whole seconds) match the catalog. Otherwise the phash is computed.
+- Image phash: the same PerceptionHash on the decoded image (Go decoders, ffmpeg for other
+  formats). Images under `dupes.min_image_size` (64px) on either side are not compared;
+  when the catalog knows the size they are skipped without being read.
+- Phashes are stored on the file row with the size/mtime they apply to (migration 6), with
+  their source (stash, mediacat) or "none" plus the reason for files that cannot be
+  hashed, so those are not retried until the file changes. Transient errors (network,
+  timeouts) are not stored and retry next run. Computing happens only in `dupes --similar`.
+- Grouping links any two files within the distance (connected sets, as Stash does), so a
+  group can chain; the report and review show each copy's distance from the kept copy
+  ("identical" when the full hash matches). Videos are only compared when their durations
+  differ by at most `dupes.similar_duration` percent (5) of the longer one or
+  `dupes.similar_duration_min` (5s). Videos and images are never compared with each other;
+  audio is skipped.
+- Keep policy for similar groups: `dupes.similar_keep`, default
+  `res,bitrate,prefer,avoid,paths,plain,size,oldest`. New rules: res (pixel count), bitrate
+  (video bitrate, else overall), size (largest).
+- Safety: similar groups may be trashed or moved (undoable); `--delete` is refused outside
+  `--review`. Every banner says the files are similar, not identical. Actions re-verify
+  each file and its keeper are unchanged since the catalog entry the phash belongs to.
+- Review keys for similar groups: same keys; rows add size and distance; the reclaimable
+  totals follow the chosen keeper (copies differ in size).
+- Workers: `dupes.phash_workers`, 0 picks half the CPUs (the work is frame decoding);
+  `-j` overrides. Group keys for saved review choices hash the members' paths, sizes and
+  mtimes, so a choice applies only to an unchanged group.
+- `list`/`info`: `phash` field (Stash's hex form) and the source; `info` also shows the
+  integrity check result.
+- Measured: Stash/Sorted/JAV/BOBB (177 files) used 177 Stash phashes, 0 computed, no
+  groups. Stash/Enhanced (578 files, many 4K-8K upscales, none in Stash's DB) computed 567
+  phashes in 3h23m wall, 17.9h CPU (~113 CPU-s per file; high-res decode dominates), found
+  49 groups / 15.4 GiB reclaimable at high. Reruns use the cached phashes.
 
 ## Deferred
 

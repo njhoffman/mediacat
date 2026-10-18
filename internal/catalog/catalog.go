@@ -131,6 +131,15 @@ var migrations = []string{
 	ALTER TABLE files ADD COLUMN checked_at INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE files ADD COLUMN check_size INTEGER NOT NULL DEFAULT -1;
 	ALTER TABLE files ADD COLUMN check_mtime_ns INTEGER NOT NULL DEFAULT 0;`,
+
+	// Perceptual hashes, valid only while phash_size/phash_mtime_ns match the file.
+	// phash_source is "stash" or "mediacat" for a hash, "none" when the file cannot be
+	// hashed (phash_error says why), and empty when never attempted.
+	`ALTER TABLE files ADD COLUMN phash INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE files ADD COLUMN phash_source TEXT NOT NULL DEFAULT '';
+	ALTER TABLE files ADD COLUMN phash_error TEXT NOT NULL DEFAULT '';
+	ALTER TABLE files ADD COLUMN phash_size INTEGER NOT NULL DEFAULT -1;
+	ALTER TABLE files ADD COLUMN phash_mtime_ns INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // bitrateMigration is the schema version that added per-stream bitrates; rows probed
@@ -327,6 +336,9 @@ type File struct {
 
 	// Integrity check; empty when never checked or the file changed since.
 	Check Check
+
+	// Perceptual hash; PHashSource is empty when never computed or no longer valid.
+	PHash PHash
 
 	// Copies is how many files on disk share this file's full hash (hardlinks counted
 	// once); 0 when the file has no current full hash. Above 1 means a known duplicate.
@@ -589,6 +601,9 @@ const fileCols = `f.id, f.volume_id, f.relpath, f.size, f.mtime_ns, f.inode, f.k
 	CASE WHEN ` + checkValid + ` THEN f.check_level ELSE '' END,
 	CASE WHEN ` + checkValid + ` THEN f.check_detail ELSE '' END,
 	CASE WHEN ` + checkValid + ` THEN f.checked_at ELSE 0 END,
+	CASE WHEN ` + phashValid + ` THEN f.phash ELSE 0 END,
+	CASE WHEN ` + phashValid + ` THEN f.phash_source ELSE '' END,
+	CASE WHEN ` + phashValid + ` THEN f.phash_error ELSE '' END,
 	` + copiesExpr
 
 func scanFile(rows interface{ Scan(...any) error }, extra ...any) (File, error) {
@@ -596,17 +611,19 @@ func scanFile(rows interface{ Scan(...any) error }, extra ...any) (File, error) 
 	var inode, scanned int64
 	var missing sql.NullInt64
 	var mountPath, mountRoot string
-	var checkedAt int64
+	var checkedAt, phash int64
 	m := &f.Meta
 	dest := []any{&f.ID, &f.VolumeID, &f.RelPath, &f.Size, &f.MtimeNS, &inode, &f.Kind, &m.Container, &m.DurationMS,
 		&m.Width, &m.Height, &m.VideoCodec, &m.AudioCodec, &m.Bitrate, &m.VideoBitrate, &m.AudioBitrate, &m.FPS, &m.SampleRate, &m.Channels,
 		&m.Tags.Artist, &m.Tags.Album, &m.Tags.Title, &m.Tags.Track, &m.Tags.Year, &m.Tags.Genre,
 		&f.ProbeError, &scanned, &missing, &f.VolumeKey, &mountPath, &mountRoot, &f.PartialHash, &f.FullHash,
-		&f.Check.Status, &f.Check.Level, &f.Check.Detail, &checkedAt, &f.Copies}
+		&f.Check.Status, &f.Check.Level, &f.Check.Detail, &checkedAt,
+		&phash, &f.PHash.Source, &f.PHash.Error, &f.Copies}
 	if err := rows.Scan(append(dest, extra...)...); err != nil {
 		return f, err
 	}
 	f.Inode = uint64(inode)
+	f.PHash.Value = uint64(phash)
 	f.ScannedAt = time.Unix(scanned, 0)
 	if checkedAt > 0 {
 		f.Check.At = time.Unix(checkedAt, 0)
@@ -1162,3 +1179,30 @@ const copiesExpr = `(CASE WHEN f.full_hash != '' AND f.hash_size = f.size AND f.
 	 FROM files d WHERE d.full_hash = f.full_hash AND d.full_hash != '' AND d.missing_since IS NULL
 	   AND d.hash_size = d.size AND d.hash_mtime_ns = d.mtime_ns)
 	ELSE 0 END)`
+
+// Perceptual hash sources.
+const (
+	PHashStash    = "stash"    // read from Stash's database
+	PHashMediacat = "mediacat" // computed by mediacat
+	PHashNone     = "none"     // the file cannot be hashed; Error says why
+)
+
+// PHash is a file's perceptual hash.
+type PHash struct {
+	Value  uint64
+	Source string
+	Error  string
+}
+
+// OK reports whether the hash holds a value.
+func (p PHash) OK() bool { return p.Source == PHashStash || p.Source == PHashMediacat }
+
+const phashValid = `f.phash_size = f.size AND f.phash_mtime_ns = f.mtime_ns`
+
+// SetPHash records a perceptual hash (or why there is none) for a file at the given size
+// and mtime.
+func (t *Tx) SetPHash(id, size, mtimeNS int64, p PHash) error {
+	_, err := t.tx.Exec(`UPDATE files SET phash = ?, phash_source = ?, phash_error = ?, phash_size = ?, phash_mtime_ns = ?
+		WHERE id = ?`, int64(p.Value), p.Source, p.Error, size, mtimeNS, id)
+	return err
+}

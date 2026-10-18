@@ -17,7 +17,7 @@ func TestTemplateIsDefault(t *testing.T) {
 		t.Errorf("defaults: %+v", c)
 	}
 	h := c.Highlights
-	if h.Size.Warn != 500<<20 || h.Size.Max != 4<<30 || h.Duration.Warn != 1_800_000 || h.Duration.Max != 7_200_000 ||
+	if h.Size.Warn != 1<<30 || h.Size.Max != 4<<30 || h.Duration.Warn != 3_600_000 || h.Duration.Max != 10_800_000 ||
 		h.Resolution.Warn != 1920*1080 || h.Resolution.Max != 3840*2160 || h.VBitrate.Warn != 10e6 || h.VBitrate.Max != 50e6 {
 		t.Errorf("highlights: %+v", h)
 	}

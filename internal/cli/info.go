@@ -131,6 +131,16 @@ func (a *app) printInfo(f catalog.File, live bool) {
 	if t.Year > 0 {
 		rows = append(rows, kv{"year", fmt.Sprint(t.Year)})
 	}
+	if c := f.Check; c.Status != "" {
+		rows = append(rows, kv{"check", fmt.Sprintf("%s (%s, %s): %s", c.Status, c.Level, c.At.Format("2006-01-02"), c.Detail)})
+	}
+	switch p := f.PHash; {
+	case p.OK():
+		src := map[string]string{catalog.PHashStash: "from Stash", catalog.PHashMediacat: "computed by mediacat"}[p.Source]
+		rows = append(rows, kv{"phash", fmt.Sprintf("%016x (%s)", p.Value, src)})
+	case p.Source == catalog.PHashNone:
+		rows = append(rows, kv{"phash", "none: " + p.Error})
+	}
 	if live {
 		rows = append(rows, kv{"cataloged", "no"})
 	} else {

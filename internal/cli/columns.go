@@ -41,6 +41,7 @@ var columnDefs = map[string]columnDef{
 	filter.FieldError: {title: "ERROR", style: ui.Err},
 	filter.FieldCheck: {title: "CHECK"},
 	filter.FieldDup:   {title: ""},
+	filter.FieldPHash: {title: "PHASH"},
 }
 
 func splitFields(spec string) []string {
@@ -209,6 +210,8 @@ func cellFor(field string, f catalog.File, base string, h config.Highlights) ui.
 		text = f.ProbeError
 	case filter.FieldCheck:
 		return checkCell(f.Check)
+	case filter.FieldPHash:
+		text = phashText(f.PHash)
 	case filter.FieldDup:
 		if f.Copies > 1 {
 			st := ui.Warn
@@ -217,6 +220,17 @@ func cellFor(field string, f catalog.File, base string, h config.Highlights) ui.
 		return ui.Cell{Text: ""}
 	}
 	return ui.Cell{Text: text}
+}
+
+// phashText shows a perceptual hash in Stash's hex form, or why there is none.
+func phashText(p catalog.PHash) string {
+	switch {
+	case p.OK():
+		return fmt.Sprintf("%016x", p.Value)
+	case p.Source == catalog.PHashNone:
+		return "none"
+	}
+	return "-"
 }
 
 func intOrDash(n int) string {

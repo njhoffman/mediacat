@@ -94,6 +94,10 @@ dupes *ARGS: build
 review *ARGS: build
     {{bin}} {{dbflag}} dupes "$@" --review
 
+# Find similar videos and images (re-encodes, resizes, upscales), e.g. just similar /mnt/nfs/Stash --review
+similar *ARGS: build
+    {{bin}} {{dbflag}} dupes --similar "$@"
+
 # Check media for corruption (quick; --full decodes everything), e.g. just check /mnt/nfs/Stash
 check-media *ARGS: build
     {{bin}} {{dbflag}} check "$@"

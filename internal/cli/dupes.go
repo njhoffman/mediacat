@@ -10,17 +10,21 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
 	"github.com/njhoffman/mediacat/internal/actions"
 	"github.com/njhoffman/mediacat/internal/catalog"
 	"github.com/njhoffman/mediacat/internal/dupes"
 	"github.com/njhoffman/mediacat/internal/filter"
+	"github.com/njhoffman/mediacat/internal/phash"
+	"github.com/njhoffman/mediacat/internal/review"
 	"github.com/njhoffman/mediacat/internal/scan"
 	"github.com/njhoffman/mediacat/internal/stash"
 	"github.com/njhoffman/mediacat/internal/ui"
@@ -47,6 +51,10 @@ type dupesFlags struct {
 	workers   int
 	showFiles bool
 	review    bool
+	similar   string
+
+	// Whether these flags were given, so --similar can pick its own defaults.
+	depthSet, keepSet, workersSet bool
 }
 
 func (a *app) dupesCmd() *cobra.Command {
@@ -75,6 +83,13 @@ stopped. Files changed since the last scan are skipped.
 
 One copy per group is kept, chosen by --keep rules applied in order:
 ` + ruleHelp.String() + `
+--similar[=LEVEL] finds videos and images that look alike instead: re-encodes, resizes,
+upscales and format changes. LEVEL is exact, high (default), medium or low, or a number
+of differing phash bits (0-32). Video phashes match Stash's, and are read from Stash's
+database for files it has hashed; the rest are computed (about 25 frame decodes per
+video) and saved. Similar groups keep the best quality copy by default (dupes.similar_keep),
+and --delete is only available through --review.
+
 --review opens an interactive list of the groups: choose the copy to keep and trash,
 move, delete or leave each group (o opens a copy to check it). Choices are saved as you
 go; applying asks for the same confirmations as below.
@@ -85,6 +100,8 @@ always asks you to type "delete".`,
 		Example: `  mediacat dupes                                  # report duplicates here
   mediacat dupes /mnt/nfs/Stash --prefer /mnt/nfs/Stash/Sorted --trash
   mediacat dupes /mnt/nfs/Stash --review
+  mediacat dupes /mnt/nfs/Stash --similar --review
+  mediacat dupes ~/Pictures --similar=medium --type image
   mediacat dupes --trash --execute
   mediacat dupes --move-to /mnt/nfs/trashbox --execute --yes
   mediacat dupes --export dupes.csv`,
@@ -94,6 +111,8 @@ always asks you to type "delete".`,
 			if len(args) == 1 {
 				dir = args[0]
 			}
+			fl := cmd.Flags()
+			df.depthSet, df.keepSet, df.workersSet = fl.Changed("depth"), fl.Changed("keep"), fl.Changed("workers")
 			return a.runDupes(dir, df)
 		},
 	}
@@ -118,6 +137,8 @@ always asks you to type "delete".`,
 	f.IntVarP(&df.workers, "workers", "j", d.Workers, "parallel hashing (0: 2 network, 1 spinning disk, 4 otherwise)")
 	f.BoolVar(&df.showFiles, "dry-run-files", false, "list every file the action would touch")
 	f.BoolVarP(&df.review, "review", "r", false, "choose the copy to keep and the action per group interactively")
+	f.StringVar(&df.similar, "similar", "", "find similar videos and images: exact, high, medium, low or a distance")
+	f.Lookup("similar").NoOptDefVal = d.Similar
 	return cmd
 }
 
@@ -165,6 +186,25 @@ func (a *app) runDupes(dir string, df dupesFlags) error {
 	depth, err := dupes.ParseDepth(df.depth)
 	if err != nil {
 		return err
+	}
+	similar := df.similar != ""
+	distance := 0
+	if similar {
+		if distance, err = dupes.ParseLevel(df.similar); err != nil {
+			return err
+		}
+		switch {
+		case df.depthSet:
+			return errors.New("--similar compares perceptual hashes; it cannot be combined with --depth")
+		case kind == catalog.ActionDelete && !df.review:
+			return errors.New("similar files are not identical, so --delete is only available in --review, where you check each group (or use --trash, which can be undone)")
+		case strings.EqualFold(df.kind, "audio"):
+			return errors.New("--similar compares videos and images; audio is not supported")
+		}
+		depth = dupes.DepthFull
+		if !df.keepSet {
+			df.keep = a.cfg.Dupes.SimilarKeep
+		}
 	}
 	if kind != "" && depth != dupes.DepthFull {
 		return errors.New("actions need --depth full: smaller depths only find possible duplicates")
@@ -252,11 +292,15 @@ func (a *app) runDupes(dir string, df dupesFlags) error {
 	var res *dupes.Result
 	prog := ui.Progress{Out: a.stderr, Cancel: cancel}
 	err = prog.Run(ctx, func(report func(ui.Update)) error {
-		finder := &dupes.Finder{DB: a.db, Options: dupes.Options{Depth: depth, Workers: workers, Policy: policy,
-			Progress: func(e dupes.Event) {
-				report(ui.Update{Label: e.Stage, Done: e.Done, Total: e.Total, Bytes: e.Bytes, TotalBytes: e.TotalBytes, Current: e.Current})
-			}}}
+		progress := func(e dupes.Event) {
+			report(ui.Update{Label: e.Stage, Done: e.Done, Total: e.Total, Bytes: e.Bytes, TotalBytes: e.TotalBytes, Current: e.Current})
+		}
 		var err error
+		if similar {
+			res, err = a.findSimilar(ctx, files, distance, policy, df, progress)
+			return err
+		}
+		finder := &dupes.Finder{DB: a.db, Options: dupes.Options{Depth: depth, Workers: workers, Policy: policy, Progress: progress}}
 		res, err = finder.Find(ctx, files)
 		return err
 	})
@@ -294,6 +338,10 @@ func (a *app) runDupes(dir string, df dupesFlags) error {
 		return nil
 	}
 	if kind == "" {
+		if similar {
+			fmt.Fprintf(a.stdout, "\n%s\n", ui.Dim.Render("Check groups with --review (o opens a copy), or add --trash or --move-to DIR (a dry run until --execute)."))
+			return nil
+		}
 		if depth == dupes.DepthFull {
 			fmt.Fprintf(a.stdout, "\n%s\n", ui.Dim.Render("To act on the extra copies add --trash, --move-to DIR or --delete (a dry run until --execute)."))
 		} else {
@@ -308,6 +356,50 @@ func (a *app) runDupes(dir string, df dupesFlags) error {
 	return err
 }
 
+// findSimilar runs the perceptual search, reusing Stash's video phashes where Stash's
+// record still matches the file.
+func (a *app) findSimilar(ctx context.Context, files []catalog.File, distance int, policy dupes.Policy, df dupesFlags, progress func(dupes.Event)) (*dupes.Result, error) {
+	d := a.cfg.Dupes
+	workers := d.PHashWorkers
+	if df.workersSet {
+		workers = df.workers
+	}
+	if workers <= 0 {
+		workers = max(runtime.NumCPU()/2, 1)
+	}
+	o := dupes.SimilarOptions{Distance: distance, DurationPct: d.SimilarDurPct, DurationMin: a.cfg.SimilarDurationMin,
+		MinImageSize: d.MinImageSize, Workers: workers, Policy: policy, Progress: progress,
+		Hasher: phash.Hasher{MinSize: d.MinImageSize}}
+	if prints := a.stashPHashes(); len(prints) > 0 {
+		o.Stash = func(f catalog.File) (uint64, bool) {
+			fp, ok := prints[f.AbsPath]
+			if !ok || !fp.Matches(f.Size, f.MtimeNS) {
+				return 0, false
+			}
+			return fp.PHash, true
+		}
+	}
+	return (&dupes.SimilarFinder{DB: a.db, Options: o}).Find(ctx, files)
+}
+
+// stashPHashes reads Stash's video phashes, read-only. Without a Stash install it returns
+// nothing; a database that cannot be read is reported and skipped.
+func (a *app) stashPHashes() map[string]stash.Fingerprint {
+	db, err := stash.Database(a.stashCfg)
+	if err != nil || db == "" {
+		return nil
+	}
+	if _, err := os.Stat(db); err != nil {
+		return nil
+	}
+	prints, err := stash.PHashes(db)
+	if err != nil {
+		a.warn("not using Stash's phashes: " + err.Error())
+		return nil
+	}
+	return prints
+}
+
 func (a *app) printDupes(res *dupes.Result, where string, limit int) {
 	w := a.stdout
 	var files, extra int
@@ -318,11 +410,23 @@ func (a *app) printDupes(res *dupes.Result, where string, limit int) {
 		reclaim += g.Reclaimable()
 	}
 	label := map[dupes.Depth]string{dupes.DepthFull: "identical content", dupes.DepthPartial: "same size and samples", dupes.DepthSize: "same size"}[res.Depth]
-	fmt.Fprintf(w, "%s  %s  %s\n", ui.Title.Render("Duplicates"), ui.Bold.Render(where),
-		ui.Dim.Render(fmt.Sprintf("(%s; %s candidates, %s hashed now)", label, ui.Count(res.Candidates), ui.Count(res.Hashed))))
-	if len(res.Groups) == 0 {
+	title, detail := "Duplicates", fmt.Sprintf("(%s; %s candidates, %s hashed now)", label, ui.Count(res.Candidates), ui.Count(res.Hashed))
+	if res.Similar {
+		title = "Similar files"
+		detail = fmt.Sprintf("(%s; %s videos and images: %s phashes from Stash, %s computed now)",
+			dupes.LevelName(res.Distance), ui.Count(res.Candidates), ui.Count(res.FromStash), ui.Count(res.Hashed))
+	}
+	fmt.Fprintf(w, "%s  %s  %s\n", ui.Title.Render(title), ui.Bold.Render(where), ui.Dim.Render(detail))
+	switch {
+	case len(res.Groups) == 0 && res.Similar:
+		fmt.Fprintln(w, ui.OK.Render("  No similar files found."))
+	case len(res.Groups) == 0:
 		fmt.Fprintln(w, ui.OK.Render("  No duplicates found."))
-	} else {
+	case res.Similar:
+		fmt.Fprintf(w, "  %s groups, %s files, %s extra copies, %s reclaimable  %s\n",
+			ui.Bold.Render(ui.Count(len(res.Groups))), ui.Count(files), ui.Count(extra), ui.Bold.Render(ui.Bytes(reclaim)),
+			ui.Warn.Render("similar, not identical: check before removing"))
+	default:
 		fmt.Fprintf(w, "  %s groups, %s files, %s extra copies, %s reclaimable\n",
 			ui.Bold.Render(ui.Count(len(res.Groups))), ui.Count(files), ui.Count(extra), ui.Bold.Render(ui.Bytes(reclaim)))
 	}
@@ -331,6 +435,10 @@ func (a *app) printDupes(res *dupes.Result, where string, limit int) {
 		if limit > 0 && i == limit {
 			fmt.Fprintf(w, "\n%s\n", ui.Dim.Render(fmt.Sprintf("%d more groups not shown (--limit 0 shows all)", len(res.Groups)-limit)))
 			break
+		}
+		if g.Similar {
+			a.printSimilarGroup(i, g, width)
+			continue
 		}
 		key := g.Key
 		if len(key) > 12 {
@@ -355,16 +463,21 @@ func (a *app) printDupes(res *dupes.Result, where string, limit int) {
 			fmt.Fprintln(w, prefix+line)
 		}
 	}
+	// Each note is followed by the files it covers, when there are details to show.
 	notes := []struct {
-		n    int
-		text string
-		st   interface{ Render(...string) string }
+		n     int
+		text  string
+		st    interface{ Render(...string) string }
+		files []dupes.Failure
 	}{
-		{len(res.Changed), "files changed since the last scan were skipped; run mediacat scan first", ui.Warn},
-		{len(res.Deferred), "files had network errors and were skipped; run again to retry", ui.Warn},
-		{len(res.Failed), "files could not be read", ui.Err},
-		{res.Unavailable, "cataloged files are on volumes that are not mounted", ui.Dim},
-		{res.Hardlinks, "hard links to files already counted were ignored", ui.Dim},
+		{len(res.Changed), "files changed since the last scan were skipped; run mediacat scan first", ui.Warn, nil},
+		{len(res.Deferred), "files had network errors and were skipped; run again to retry", ui.Warn, res.Deferred},
+		{len(res.Failed), "files could not be read", ui.Err, res.Failed},
+		{len(res.Unhashable), "videos and images cannot be phashed (no frames decode); see mediacat info", ui.Dim, res.Unhashable},
+		{res.SmallImages, fmt.Sprintf("images smaller than %dpx were not compared", a.cfg.Dupes.MinImageSize), ui.Dim, nil},
+		{res.Skipped, "audio files are not compared for similarity", ui.Dim, nil},
+		{res.Unavailable, "cataloged files are on volumes that are not mounted", ui.Dim, nil},
+		{res.Hardlinks, "hard links to files already counted were ignored", ui.Dim, nil},
 	}
 	first := true
 	for _, n := range notes {
@@ -376,9 +489,39 @@ func (a *app) printDupes(res *dupes.Result, where string, limit int) {
 			first = false
 		}
 		fmt.Fprintf(w, "%s\n", n.st.Render(fmt.Sprintf("  %s %s", ui.Count(n.n), n.text)))
+		for _, f := range n.files {
+			fmt.Fprintf(w, "    %s  %s\n", f.Path, ui.Dim.Render(f.Err))
+		}
 	}
-	for _, f := range append(res.Failed, res.Deferred...) {
-		fmt.Fprintf(w, "    %s  %s\n", f.Path, ui.Dim.Render(f.Err))
+}
+
+// printSimilarGroup shows a similar group with the qualities that tell its copies apart.
+func (a *app) printSimilarGroup(i int, g dupes.Group, width int) {
+	w := a.stdout
+	maxDist := 0
+	for j := range g.Files {
+		maxDist = max(maxDist, g.Distance(j, g.Keep))
+	}
+	fmt.Fprintf(w, "\n%s  %s  %s  %s\n", ui.Accent.Render(fmt.Sprintf("#%d", i+1)),
+		fmt.Sprintf("%d similar files", len(g.Files)), ui.Bold.Render(ui.Bytes(g.Reclaimable())+" reclaimable"),
+		ui.Dim.Render(fmt.Sprintf("up to %d bits apart", maxDist)))
+	for j, f := range g.Files {
+		tag, st := "dupe", ui.Warn
+		if j == g.Keep {
+			tag, st = "keep", ui.OK
+		}
+		m := f.Meta
+		info := fmt.Sprintf("%9s  %9s  %8s  %9s  %-9s", ui.Bytes(f.Size), ui.Res(m.Width, m.Height),
+			ui.Duration(m.DurationMS), ui.Bitrate(m.VideoBitrate), review.Likeness(g, j, g.Keep))
+		if f.Kind == "image" {
+			info = fmt.Sprintf("%9s  %9s  %8s  %9s  %-9s", ui.Bytes(f.Size), ui.Res(m.Width, m.Height), "", "", review.Likeness(g, j, g.Keep))
+		}
+		prefix := fmt.Sprintf("  %s  %s  ", st.Render(tag), ui.Dim.Render(info))
+		line := f.AbsPath
+		if width > 0 {
+			line = ui.TruncateMiddle(line, max(width-lipgloss.Width(prefix), 20))
+		}
+		fmt.Fprintln(w, prefix+line)
 	}
 }
 
@@ -476,12 +619,16 @@ var actionVerb = map[string]string{
 // plan cannot be carried out as described (a trash on another device, no space).
 func (a *app) describePlan(p actions.Plan, trasher *actions.Trasher) (int, []string, error) {
 	head := fmt.Sprintf("%s files (%s) will be %s", ui.Count(len(p.Ops)), ui.Bytes(p.Bytes()), actionVerb[p.Kind])
+	var similar []string
+	if p.Similar {
+		similar = []string{"These are SIMILAR files, not identical copies: each group keeps the copy marked keep."}
+	}
 	switch p.Kind {
 	case catalog.ActionDelete:
-		return ui.LevelDanger, []string{head,
+		return ui.LevelDanger, append(append([]string{head}, similar...),
 			"They will NOT go to the trash. This cannot be undone.",
 			fmt.Sprintf("One copy of each of the %s groups is kept.", ui.Count(countGroups(p))),
-		}, nil
+		), nil
 	case catalog.ActionTrash:
 		perDir := map[string]int{}
 		var order []string
@@ -496,7 +643,7 @@ func (a *app) describePlan(p actions.Plan, trasher *actions.Trasher) (int, []str
 			}
 			perDir[loc.Dir]++
 		}
-		lines := []string{head}
+		lines := append([]string{head}, similar...)
 		for _, d := range order {
 			lines = append(lines, fmt.Sprintf("trash: %s (%s files, same drive)", d, ui.Count(perDir[d])))
 		}
@@ -505,7 +652,7 @@ func (a *app) describePlan(p actions.Plan, trasher *actions.Trasher) (int, []str
 			"Restorable with mediacat undo. Space is freed only when the trash is emptied.")
 		return ui.LevelWarn, lines, nil
 	default:
-		lines := []string{head + " to " + p.MoveTo}
+		lines := append([]string{head + " to " + p.MoveTo}, similar...)
 		existing := p.MoveTo
 		for !isDir(existing) {
 			existing = filepath.Dir(existing)
@@ -594,6 +741,7 @@ type groupJSON struct {
 	Hash        string         `json:"hash"`
 	Size        int64          `json:"size"`
 	Confirmed   bool           `json:"confirmed"`
+	Similar     bool           `json:"similar,omitempty"`
 	Reclaimable int64          `json:"reclaimable"`
 	Keep        string         `json:"keep"`
 	Files       []groupFileRow `json:"files"`
@@ -605,18 +753,28 @@ type groupFileRow struct {
 	Modified time.Time `json:"modified"`
 	Volume   string    `json:"volume"`
 	RelPath  string    `json:"relpath"`
+	// Similar groups only.
+	Size      int64  `json:"size,omitempty"`
+	PHash     string `json:"phash,omitempty"`
+	Distance  *int   `json:"distance,omitempty"` // phash bits from the kept copy
+	Identical bool   `json:"identical,omitempty"`
 }
 
 func toGroupJSON(gs []dupes.Group) []groupJSON {
 	out := make([]groupJSON, 0, len(gs))
 	for _, g := range gs {
-		j := groupJSON{Hash: g.Key, Size: g.Size, Confirmed: g.Confirmed, Reclaimable: g.Reclaimable(), Keep: g.Files[g.Keep].AbsPath}
+		j := groupJSON{Hash: g.Key, Size: g.Size, Confirmed: g.Confirmed, Similar: g.Similar, Reclaimable: g.Reclaimable(), Keep: g.Files[g.Keep].AbsPath}
 		for i, f := range g.Files {
 			role := "duplicate"
 			if i == g.Keep {
 				role = "keep"
 			}
-			j.Files = append(j.Files, groupFileRow{f.AbsPath, role, time.Unix(0, f.MtimeNS).UTC(), f.VolumeKey, f.RelPath})
+			r := groupFileRow{Path: f.AbsPath, Role: role, Modified: time.Unix(0, f.MtimeNS).UTC(), Volume: f.VolumeKey, RelPath: f.RelPath}
+			if g.Similar {
+				d := g.Distance(i, g.Keep)
+				r.Size, r.PHash, r.Distance, r.Identical = f.Size, fmt.Sprintf("%016x", f.PHash.Value), &d, i != g.Keep && g.Identical(i, g.Keep)
+			}
+			j.Files = append(j.Files, r)
 		}
 		out = append(out, j)
 	}
@@ -639,11 +797,15 @@ func exportGroups(path string, gs []dupes.Group) error {
 		err = writeGroupsJSON(f, gs)
 	case ".csv":
 		cw := csv.NewWriter(f)
-		cw.Write([]string{"group", "role", "size", "hash", "confirmed", "path", "modified", "volume", "relpath"})
+		cw.Write([]string{"group", "role", "size", "hash", "confirmed", "path", "modified", "volume", "relpath", "similar", "phash", "distance"})
 		for i, g := range toGroupJSON(gs) {
 			for _, r := range g.Files {
-				cw.Write([]string{fmt.Sprint(i + 1), r.Role, fmt.Sprint(g.Size), g.Hash, fmt.Sprint(g.Confirmed), r.Path,
-					r.Modified.Format(time.RFC3339), r.Volume, r.RelPath})
+				size, dist := g.Size, ""
+				if g.Similar {
+					size, dist = r.Size, fmt.Sprint(*r.Distance)
+				}
+				cw.Write([]string{fmt.Sprint(i + 1), r.Role, fmt.Sprint(size), g.Hash, fmt.Sprint(g.Confirmed), r.Path,
+					r.Modified.Format(time.RFC3339), r.Volume, r.RelPath, fmt.Sprint(g.Similar), r.PHash, dist})
 			}
 		}
 		cw.Flush()

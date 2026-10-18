@@ -92,3 +92,47 @@ func GenerateBroken(t testing.TB, dir string) Broken {
 	os.Remove(jpg)
 	return b
 }
+
+// Similar are fixtures for perceptual duplicates.
+type Similar struct {
+	Video      string // 10s 320x240 test pattern
+	VideoHigh  string // the same pattern at 640x480 and a higher bitrate
+	VideoOther string // different content of the same length
+	Image      string // 640x480 png
+	ImageSmall string // the same picture as a 320x240 jpeg
+	ImageOther string // a different picture
+	ImagePPM   string // the same picture in a format Go does not decode
+	ImageTiny  string // 32x24 png
+}
+
+// GenerateSimilar writes perceptual-duplicate fixtures into dir.
+func GenerateSimilar(t testing.TB, dir string) Similar {
+	t.Helper()
+	Generate(t, t.TempDir()) // skips when ffmpeg is missing
+	s := Similar{
+		Video: filepath.Join(dir, "movie.mp4"), VideoHigh: filepath.Join(dir, "hd", "movie.mkv"),
+		VideoOther: filepath.Join(dir, "other.mp4"), Image: filepath.Join(dir, "photo.png"),
+		ImageSmall: filepath.Join(dir, "small", "photo.jpg"), ImageOther: filepath.Join(dir, "fractal.png"),
+		ImagePPM: filepath.Join(dir, "photo.ppm"), ImageTiny: filepath.Join(dir, "icon.png"),
+	}
+	os.MkdirAll(filepath.Dir(s.VideoHigh), 0o755)
+	os.MkdirAll(filepath.Dir(s.ImageSmall), 0o755)
+	run(t, "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=10", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-b:v", "300k", s.Video)
+	run(t, "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=10", "-vf", "scale=640:480",
+		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-b:v", "3M", s.VideoHigh)
+	run(t, "-f", "lavfi", "-i", "mandelbrot=size=320x240:rate=25", "-t", "10", "-c:v", "libx264", "-pix_fmt", "yuv420p", s.VideoOther)
+	run(t, "-f", "lavfi", "-i", "testsrc=size=640x480:duration=1", "-frames:v", "1", s.Image)
+	run(t, "-i", s.Image, "-vf", "scale=320:240", "-q:v", "5", s.ImageSmall)
+	run(t, "-i", s.Image, s.ImagePPM)
+	run(t, "-f", "lavfi", "-i", "mandelbrot=size=640x480", "-frames:v", "1", s.ImageOther)
+	run(t, "-f", "lavfi", "-i", "testsrc=size=32x24:duration=1", "-frames:v", "1", s.ImageTiny)
+	return s
+}
+
+// GenerateStill writes a video holding a single frame, the way some tools save stills.
+func GenerateStill(t testing.TB, path string) {
+	t.Helper()
+	Generate(t, t.TempDir()) // skips when ffmpeg is missing
+	run(t, "-f", "lavfi", "-i", "testsrc=size=320x240:rate=30", "-frames:v", "1",
+		"-c:v", "libx264", "-pix_fmt", "yuv420p", path)
+}

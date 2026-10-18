@@ -28,7 +28,8 @@ catalog: ~/.local/share/mediacat/catalog.db
 # Warn when the catalog for a path is older than this many days (0 disables).
 stale_days: 30
 
-# Stash config, read only to remind you to run Clean after changing files in its libraries.
+# Stash config, read only: to remind you to run Clean after changing files in its
+# libraries, and to reuse the video phashes in its database for dupes --similar.
 stash_config: ~/.stash/config.yml
 
 scan:
@@ -50,8 +51,8 @@ scan:
     - lost+found
 
 check:
-  # quick decodes a second at the start and near the end (catches truncated files, reads
-  # little); full decodes everything (finds damage anywhere, reads the whole file).
+  # quick decodes the first frame and reads the data near the end (catches truncated
+  # files, reads little); full decodes everything (finds damage anywhere, reads it all).
   level: quick
   # Parallel checks; 0 picks 4, or 2 for full checks on network or spinning disks.
   workers: 0
@@ -60,7 +61,7 @@ dupes:
   # size, partial or full. Only full can trash, move or delete.
   depth: full
   # Rules choosing the copy to keep, in order:
-  # prefer, avoid, paths, plain, oldest, newest, shortest, longest
+  # prefer, avoid, paths, plain, oldest, newest, shortest, longest, res, bitrate, size
   keep: prefer,avoid,paths,plain,oldest,shortest
   # Keep copies under these directories (first wins) / avoid keeping copies under these.
   prefer: []
@@ -79,11 +80,26 @@ dupes:
   workers: 0
   # Groups shown in the report (0 for all).
   limit: 20
+  # dupes --similar: perceptual matches (videos and images that look alike). Level used
+  # when --similar has no value: exact, high, medium or low (up to 0, 4, 8 or 10 of 64
+  # phash bits different), or a number of bits.
+  similar: high
+  # Keep rules for similar groups. The copies differ, so quality comes first.
+  similar_keep: res,bitrate,prefer,avoid,paths,plain,size,oldest
+  # Videos are compared only when their durations differ by at most this percentage of
+  # the longer one, or similar_duration_min, whichever is larger.
+  similar_duration: 5
+  similar_duration_min: 5s
+  # Images narrower or shorter than this many pixels are not compared (icons, thumbnails).
+  min_image_size: 64
+  # Parallel perceptual hashing. It is CPU-bound (25 frame decodes per video), so 0 picks
+  # half the CPUs.
+  phash_workers: 0
 
 list:
   # Fields for sort and columns: path name dir ext type size duration res width height fps
   # bitrate vbitrate abitrate codec vcodec acodec container channels samplerate mtime
-  # scanned artist album title track year genre error check dup
+  # scanned artist album title track year genre error check dup phash
   #
   # Default sort: comma-separated fields, "-" prefix for descending, e.g. -size,duration
   sort: path
@@ -96,11 +112,11 @@ list:
   # Leave warn empty to turn highlighting off for that column.
   highlight:
     size:
-      warn: 500M
+      warn: 1G
       max: 4G
     duration:
-      warn: 30m
-      max: 2h
+      warn: 1h
+      max: 3h
     resolution:
       warn: 1920x1080
       max: 3840x2160
@@ -141,6 +157,12 @@ type Config struct {
 		MinSize        string   `yaml:"min_size"`
 		Workers        int      `yaml:"workers"`
 		Limit          int      `yaml:"limit"`
+		Similar        string   `yaml:"similar"`
+		SimilarKeep    string   `yaml:"similar_keep"`
+		SimilarDurPct  float64  `yaml:"similar_duration"`
+		SimilarDurMin  string   `yaml:"similar_duration_min"`
+		MinImageSize   int      `yaml:"min_image_size"`
+		PHashWorkers   int      `yaml:"phash_workers"`
 	} `yaml:"dupes"`
 	List struct {
 		Sort         string `yaml:"sort"`
@@ -155,9 +177,10 @@ type Config struct {
 	} `yaml:"list"`
 
 	// Parsed values, filled by Load.
-	ProbeTimeout time.Duration `yaml:"-"`
-	Highlights   Highlights    `yaml:"-"`
-	Path         string        `yaml:"-"`
+	ProbeTimeout       time.Duration `yaml:"-"`
+	SimilarDurationMin time.Duration `yaml:"-"`
+	Highlights         Highlights    `yaml:"-"`
+	Path               string        `yaml:"-"`
 }
 
 // Scale is a parsed warn/max pair. Enabled is false when warn is empty.
@@ -209,6 +232,8 @@ func Default() Config {
 var previousTemplates = map[string]bool{
 	"d85d50d42b7e5317dea4d4e94051fc8307e8c392da956df3f3d30ae63b53fc1c": true,
 	"c5f5aad43b613cc32fd10741a45944ad4ac87265eff377e6e55d05eeb5a151ac": true,
+	"82a6812b1af27d67afc60b5eedfaa85c59fd05a7baa6e0c295a524ba1772817f": true,
+	"619f4449a73fbc916ace72615830b6c9cfc0e5ece35f4820080542f9e9ea4af5": true,
 }
 
 // Status reports what Load did to the file.
@@ -281,6 +306,16 @@ func (c *Config) finish() error {
 			return fmt.Errorf("scan.probe_timeout: %w", err)
 		}
 		c.ProbeTimeout = d
+	}
+	if c.Dupes.SimilarDurMin != "" {
+		d, err := time.ParseDuration(c.Dupes.SimilarDurMin)
+		if err != nil || d < 0 {
+			return fmt.Errorf("dupes.similar_duration_min: want a duration like 5s, got %q", c.Dupes.SimilarDurMin)
+		}
+		c.SimilarDurationMin = d
+	}
+	if c.Dupes.SimilarDurPct < 0 || c.Dupes.SimilarDurPct > 100 {
+		return fmt.Errorf("dupes.similar_duration: want a percentage from 0 to 100, got %v", c.Dupes.SimilarDurPct)
 	}
 	for name, cols := range map[string]string{"list.columns": c.List.Columns, "list.audio_columns": c.List.AudioColumns} {
 		for _, col := range strings.Split(cols, ",") {
