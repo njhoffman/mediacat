@@ -13,6 +13,7 @@ import (
 var Rules = map[string]string{
 	"prefer":   "keep copies under a --prefer directory (earlier directories win)",
 	"avoid":    "keep copies outside --avoid directories",
+	"paths":    `keep copies whose path contains a preferred pattern; "^pattern" avoids it (case-insensitive)`,
 	"plain":    `keep names without copy markers like "(1)", " - Copy", "_2"`,
 	"oldest":   "keep the oldest modification time",
 	"newest":   "keep the newest modification time",
@@ -21,13 +22,35 @@ var Rules = map[string]string{
 }
 
 // DefaultPolicy is used when no --keep is given.
-const DefaultPolicy = "prefer,avoid,plain,oldest,shortest"
+const DefaultPolicy = "prefer,avoid,paths,plain,oldest,shortest"
 
 // Policy chooses which copy in a group to keep.
 type Policy struct {
 	Rules  []string
 	Prefer []string // absolute directories
 	Avoid  []string
+	// Path patterns for the "paths" rule, lowercased: substrings to prefer, and ones to
+	// avoid (written with a leading "^").
+	PathPrefer []string
+	PathAvoid  []string
+}
+
+// SetPathPatterns parses preferred-path patterns such as ["sorted", "^incoming"].
+func (p *Policy) SetPathPatterns(patterns []string) error {
+	p.PathPrefer, p.PathAvoid = nil, nil
+	for _, pat := range patterns {
+		avoid := strings.HasPrefix(pat, "^")
+		pat = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(pat, "^")))
+		if pat == "" {
+			return fmt.Errorf("empty preferred path pattern")
+		}
+		if avoid {
+			p.PathAvoid = append(p.PathAvoid, pat)
+		} else {
+			p.PathPrefer = append(p.PathPrefer, pat)
+		}
+	}
+	return nil
 }
 
 // ParsePolicy parses a comma-separated rule list.
@@ -88,6 +111,8 @@ func (p Policy) score(rule string, f catalog.File) int64 {
 			return 1
 		}
 		return 0
+	case "paths":
+		return p.pathScore(f.AbsPath)
 	case "plain":
 		return int64(copyMarkers(f.AbsPath))
 	case "oldest":
@@ -122,4 +147,23 @@ func (p Policy) less(a, b catalog.File) bool {
 		}
 	}
 	return a.AbsPath < b.AbsPath
+}
+
+// pathScore ranks a path by its patterns: each avoided pattern it contains outweighs any
+// preference; among preferred patterns, earlier ones rank higher. Lower is better.
+func (p Policy) pathScore(path string) int64 {
+	lower := strings.ToLower(path)
+	score := int64(len(p.PathPrefer))
+	for i, pat := range p.PathPrefer {
+		if strings.Contains(lower, pat) {
+			score = int64(i)
+			break
+		}
+	}
+	for _, pat := range p.PathAvoid {
+		if strings.Contains(lower, pat) {
+			score += int64(len(p.PathPrefer)) + 1
+		}
+	}
+	return score
 }

@@ -17,48 +17,121 @@ const (
 	KindImage = "image"
 )
 
-// Filter is the parsed set of list criteria. Zero values mean "no constraint".
+// Filter is the parsed set of list criteria. Zero values mean "no constraint". Text
+// matches are case-insensitive substrings.
 type Filter struct {
-	Kind          string
-	MinSize       int64
-	MaxSize       int64
-	MinDurationMS int64
-	MaxDurationMS int64
-	MinRes        int // compared against the short side of the frame
-	MaxRes        int
-	Codecs        []string // matches video or audio codec
-	Exts          []string // lowercase, no dot
-	Missing       bool     // only files whose last scan did not find them
-	Sort          string
-	Desc          bool
-	Limit         int
+	Kind           string
+	MinSize        int64
+	MaxSize        int64
+	MinDurationMS  int64
+	MaxDurationMS  int64
+	MinRes         int // compared against the short side of the frame
+	MaxRes         int
+	MinBitrate     int64 // overall, bits/s
+	MaxBitrate     int64
+	MinVBitrate    int64
+	MaxVBitrate    int64
+	MinABitrate    int64
+	MaxABitrate    int64
+	MinFPS         float64
+	MaxFPS         float64
+	MinYear        int
+	MaxYear        int
+	Codecs         []string // matches video or audio codec
+	VCodecs        []string
+	ACodecs        []string
+	Containers     []string // substring of ffprobe's format name, e.g. "matroska"
+	Exts           []string // lowercase, no dot
+	Name           string   // file name
+	Path           string   // anywhere in the path
+	Artist         string
+	Album          string
+	Title          string
+	Genre          string
+	ModifiedAfter  time.Time
+	ModifiedBefore time.Time
+	Missing        bool // only files whose last scan did not find them
+	Errors         bool // only files that could not be probed
+	Sorts          []SortKey
+	Limit          int
 }
 
-// SortKeys are the accepted --sort values.
-var SortKeys = []string{"path", "size", "duration", "res", "mtime", "bitrate"}
+// Field names shared by --sort and --columns.
+const (
+	FieldPath       = "path"
+	FieldName       = "name"
+	FieldDir        = "dir"
+	FieldExt        = "ext"
+	FieldType       = "type"
+	FieldSize       = "size"
+	FieldDuration   = "duration"
+	FieldRes        = "res"
+	FieldWidth      = "width"
+	FieldHeight     = "height"
+	FieldFPS        = "fps"
+	FieldBitrate    = "bitrate"
+	FieldVBitrate   = "vbitrate"
+	FieldABitrate   = "abitrate"
+	FieldCodec      = "codec"
+	FieldVCodec     = "vcodec"
+	FieldACodec     = "acodec"
+	FieldContainer  = "container"
+	FieldChannels   = "channels"
+	FieldSampleRate = "samplerate"
+	FieldMtime      = "mtime"
+	FieldScanned    = "scanned"
+	FieldArtist     = "artist"
+	FieldAlbum      = "album"
+	FieldTitle      = "title"
+	FieldTrack      = "track"
+	FieldYear       = "year"
+	FieldGenre      = "genre"
+	FieldError      = "error"
+)
+
+// Fields lists every field, in the order help text shows them.
+var Fields = []string{
+	FieldPath, FieldName, FieldDir, FieldExt, FieldType, FieldSize, FieldDuration, FieldRes, FieldWidth,
+	FieldHeight, FieldFPS, FieldBitrate, FieldVBitrate, FieldABitrate, FieldCodec, FieldVCodec, FieldACodec,
+	FieldContainer, FieldChannels, FieldSampleRate, FieldMtime, FieldScanned, FieldArtist, FieldAlbum,
+	FieldTitle, FieldTrack, FieldYear, FieldGenre, FieldError,
+}
+
+// IsField reports whether name is a known field.
+func IsField(name string) bool {
+	for _, f := range Fields {
+		if f == name {
+			return true
+		}
+	}
+	return false
+}
 
 // Validate checks cross-field consistency after parsing.
 func (f Filter) Validate() error {
 	if f.Kind != "" && f.Kind != KindVideo && f.Kind != KindAudio && f.Kind != KindImage {
 		return fmt.Errorf("unknown type %q (want video, audio or image)", f.Kind)
 	}
-	if f.MaxSize > 0 && f.MinSize > f.MaxSize {
-		return fmt.Errorf("min size is larger than max size")
+	ranges := []struct {
+		name     string
+		min, max float64
+	}{
+		{"size", float64(f.MinSize), float64(f.MaxSize)},
+		{"duration", float64(f.MinDurationMS), float64(f.MaxDurationMS)},
+		{"resolution", float64(f.MinRes), float64(f.MaxRes)},
+		{"bitrate", float64(f.MinBitrate), float64(f.MaxBitrate)},
+		{"video bitrate", float64(f.MinVBitrate), float64(f.MaxVBitrate)},
+		{"audio bitrate", float64(f.MinABitrate), float64(f.MaxABitrate)},
+		{"fps", f.MinFPS, f.MaxFPS},
+		{"year", float64(f.MinYear), float64(f.MaxYear)},
 	}
-	if f.MaxDurationMS > 0 && f.MinDurationMS > f.MaxDurationMS {
-		return fmt.Errorf("min duration is longer than max duration")
-	}
-	if f.MaxRes > 0 && f.MinRes > f.MaxRes {
-		return fmt.Errorf("min resolution is higher than max resolution")
-	}
-	if f.Sort != "" {
-		ok := false
-		for _, k := range SortKeys {
-			ok = ok || k == f.Sort
+	for _, r := range ranges {
+		if r.max > 0 && r.min > r.max {
+			return fmt.Errorf("min %s is larger than max %s", r.name, r.name)
 		}
-		if !ok {
-			return fmt.Errorf("unknown sort key %q (want one of %s)", f.Sort, strings.Join(SortKeys, ", "))
-		}
+	}
+	if !f.ModifiedAfter.IsZero() && !f.ModifiedBefore.IsZero() && f.ModifiedAfter.After(f.ModifiedBefore) {
+		return fmt.Errorf("--modified-after is later than --modified-before")
 	}
 	return nil
 }
@@ -166,4 +239,70 @@ func SplitList(vals []string) []string {
 		}
 	}
 	return out
+}
+
+// SortKey is one --sort field; Desc is set by a "-" prefix.
+type SortKey struct {
+	Key  string
+	Desc bool
+}
+
+// ParseSort parses comma-separated keys such as "-size,duration".
+func ParseSort(spec string) ([]SortKey, error) {
+	var out []SortKey
+	for _, part := range strings.Split(spec, ",") {
+		part = strings.ToLower(strings.TrimSpace(part))
+		if part == "" {
+			continue
+		}
+		k := SortKey{Key: strings.TrimPrefix(part, "-"), Desc: strings.HasPrefix(part, "-")}
+		if !IsField(k.Key) {
+			return nil, fmt.Errorf("unknown sort key %q (want %s)", k.Key, strings.Join(Fields, ", "))
+		}
+		out = append(out, k)
+	}
+	return out, nil
+}
+
+var bitrateUnits = map[string]float64{"": 1, "b": 1, "bps": 1, "k": 1e3, "kb": 1e3, "kbps": 1e3, "m": 1e6, "mb": 1e6, "mbps": 1e6}
+
+// ParseBitrate parses decimal bit rates such as "128k", "4.5M" or "8000000". "/s" is
+// accepted and ignored ("4M/s").
+func ParseBitrate(s string) (int64, error) {
+	t := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(s)), "/s")
+	i := strings.IndexFunc(t, func(r rune) bool { return (r < '0' || r > '9') && r != '.' })
+	num, unit := t, ""
+	if i >= 0 {
+		num, unit = t[:i], strings.TrimSpace(t[i:])
+	}
+	mult, ok := bitrateUnits[unit]
+	n, err := strconv.ParseFloat(num, 64)
+	if !ok || err != nil || n < 0 {
+		return 0, fmt.Errorf("invalid bitrate %q (examples: 128k, 4.5M)", s)
+	}
+	return int64(math.Round(n * mult)), nil
+}
+
+// ParseTime parses an absolute date ("2026-01-31", "2026-01-31T15:04") or an age before
+// now ("7d", "2w", "36h", "3mo", "1y").
+func ParseTime(s string, now time.Time) (time.Time, error) {
+	t := strings.TrimSpace(s)
+	for _, layout := range []string{"2006-01-02", "2006-01-02T15:04", "2006-01-02 15:04", time.RFC3339} {
+		if v, err := time.ParseInLocation(layout, t, time.Local); err == nil {
+			return v, nil
+		}
+	}
+	units := []struct {
+		suffix string
+		d      time.Duration
+	}{{"mo", 30 * 24 * time.Hour}, {"y", 365 * 24 * time.Hour}, {"w", 7 * 24 * time.Hour}, {"d", 24 * time.Hour}}
+	for _, u := range units {
+		if n, err := strconv.ParseFloat(strings.TrimSuffix(t, u.suffix), 64); strings.HasSuffix(t, u.suffix) && err == nil && n >= 0 {
+			return now.Add(-time.Duration(n * float64(u.d))), nil
+		}
+	}
+	if d, err := time.ParseDuration(t); err == nil && d >= 0 {
+		return now.Add(-d), nil
+	}
+	return time.Time{}, fmt.Errorf("invalid time %q (examples: 2026-01-31, 7d, 2w, 36h)", s)
 }

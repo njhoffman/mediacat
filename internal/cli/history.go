@@ -246,7 +246,7 @@ func (a *app) runTrash(dir string, empty, everything bool) error {
 	fmt.Fprintf(a.stdout, "  %-22s %s\n", "free on drive", ui.Bytes(int64(free)))
 	if !empty {
 		if len(ours) > 0 {
-			fmt.Fprintf(a.stdout, "\n%s\n", ui.Dim.Render("Free that space with: mediacat trash "+dir+" --empty"))
+			fmt.Fprintf(a.stdout, "\n%s\n", ui.Dim.Render("Free that space with: mediacat trash "+ui.Quote(dir)+" --empty"))
 		}
 		return nil
 	}

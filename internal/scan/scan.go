@@ -52,12 +52,15 @@ var DefaultExcludes = []string{".Trash", ".Trash-*", ".Trashes", "trashbox", "$R
 
 // Options configure a scan.
 type Options struct {
-	Workers  int  // 0 picks a default from the volume type
-	Prune    bool // delete rows for files no longer on disk instead of marking them missing
-	Force    bool // re-probe every file
-	Excludes []string
-	Progress func(Event)
-	Now      func() time.Time
+	Workers int  // 0 picks a default from the volume type
+	Prune   bool // delete rows for files no longer on disk instead of marking them missing
+	Force   bool // re-probe every file
+	// BaseExcludes replaces DefaultExcludes when non-nil (the config's scan.exclude list);
+	// Excludes adds to it.
+	BaseExcludes []string
+	Excludes     []string
+	Progress     func(Event)
+	Now          func() time.Time
 	// BatchSize and BatchInterval bound how much probe work is lost if the process dies.
 	BatchSize     int
 	BatchInterval time.Duration
@@ -156,7 +159,11 @@ func (s *Scanner) Run(ctx context.Context, dir string) (*Summary, error) {
 		}
 		return sum, ferr
 	}
-	excludes := append(append([]string{}, DefaultExcludes...), o.Excludes...)
+	base := o.BaseExcludes
+	if base == nil {
+		base = DefaultExcludes
+	}
+	excludes := append(append([]string{}, base...), o.Excludes...)
 
 	files, walkErrDirs, err := s.walk(ctx, absRoot, root, excludes, sum)
 	if err != nil {
@@ -514,8 +521,8 @@ func (s *Scanner) probeAll(ctx context.Context, volID int64, files []found, know
 	return commit()
 }
 
-// ExcludedByDefault reports whether a scan skips path because a component of it below
-// root matches DefaultExcludes.
-func ExcludedByDefault(path, root string) bool {
-	return excludedPath(path, root, DefaultExcludes)
+// Excluded reports whether a scan of root skips path because a component of it below
+// root matches one of patterns.
+func Excluded(path, root string, patterns []string) bool {
+	return excludedPath(path, root, patterns)
 }

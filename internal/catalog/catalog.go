@@ -110,7 +110,14 @@ var migrations = []string{
 		at           INTEGER NOT NULL
 	);
 	CREATE INDEX actions_batch ON actions (batch_id);`,
+
+	`ALTER TABLE files ADD COLUMN video_bitrate INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE files ADD COLUMN audio_bitrate INTEGER NOT NULL DEFAULT 0;`,
 }
+
+// bitrateMigration is the schema version that added per-stream bitrates; rows probed
+// before it are backfilled from their stored ffprobe JSON.
+const bitrateMigration = 3
 
 // DB wraps the catalog database.
 type DB struct {
@@ -175,7 +182,48 @@ func (c *DB) migrate() error {
 			return err
 		}
 	}
+	if v < bitrateMigration && len(migrations) >= bitrateMigration {
+		return c.backfillBitrates()
+	}
 	return nil
+}
+
+// backfillBitrates derives stream bitrates for already-probed files from the ffprobe
+// output stored with them, so upgrading does not require re-probing the library.
+func (c *DB) backfillBitrates() error {
+	rows, err := c.db.Query(`SELECT id, kind, probe_json FROM files WHERE probe_json IS NOT NULL AND length(probe_json) > 0`)
+	if err != nil {
+		return err
+	}
+	type upd struct{ id, video, audio int64 }
+	var updates []upd
+	for rows.Next() {
+		var id int64
+		var kind string
+		var raw []byte
+		if err := rows.Scan(&id, &kind, &raw); err != nil {
+			rows.Close()
+			return err
+		}
+		if r, err := probe.FromJSON(raw, kind); err == nil && (r.VideoBitrate > 0 || r.AudioBitrate > 0) {
+			updates = append(updates, upd{id, r.VideoBitrate, r.AudioBitrate})
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	for _, u := range updates {
+		if _, err := tx.Exec(`UPDATE files SET video_bitrate = ?, audio_bitrate = ? WHERE id = ?`, u.video, u.audio, u.id); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // Volume is a stored volume row.
@@ -330,15 +378,16 @@ func (t *Tx) PutFile(f File) error {
 	m := f.Meta
 	_, err := t.tx.Exec(`
 		INSERT INTO files (volume_id, relpath, ext, size, mtime_ns, inode, kind, container, duration_ms,
-			width, height, video_codec, audio_codec, bitrate, fps, sample_rate, channels,
+			width, height, video_codec, audio_codec, bitrate, video_bitrate, audio_bitrate, fps, sample_rate, channels,
 			tag_artist, tag_album, tag_title, tag_track, tag_year, tag_genre,
 			probe_json, probe_error, scanned_at, missing_since)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
 		ON CONFLICT (volume_id, relpath) DO UPDATE SET ext = excluded.ext, size = excluded.size,
 			mtime_ns = excluded.mtime_ns, inode = excluded.inode, kind = excluded.kind,
 			container = excluded.container, duration_ms = excluded.duration_ms,
 			width = excluded.width, height = excluded.height, video_codec = excluded.video_codec,
 			audio_codec = excluded.audio_codec, bitrate = excluded.bitrate, fps = excluded.fps,
+			video_bitrate = excluded.video_bitrate, audio_bitrate = excluded.audio_bitrate,
 			sample_rate = excluded.sample_rate, channels = excluded.channels,
 			tag_artist = excluded.tag_artist, tag_album = excluded.tag_album,
 			tag_title = excluded.tag_title, tag_track = excluded.tag_track,
@@ -346,7 +395,7 @@ func (t *Tx) PutFile(f File) error {
 			probe_json = excluded.probe_json, probe_error = excluded.probe_error,
 			scanned_at = excluded.scanned_at, missing_since = NULL`,
 		f.VolumeID, f.RelPath, Ext(f.RelPath), f.Size, f.MtimeNS, int64(f.Inode), f.Kind, m.Container, m.DurationMS,
-		m.Width, m.Height, m.VideoCodec, m.AudioCodec, m.Bitrate, m.FPS, m.SampleRate, m.Channels,
+		m.Width, m.Height, m.VideoCodec, m.AudioCodec, m.Bitrate, m.VideoBitrate, m.AudioBitrate, m.FPS, m.SampleRate, m.Channels,
 		m.Tags.Artist, m.Tags.Album, m.Tags.Title, m.Tags.Track, m.Tags.Year, m.Tags.Genre,
 		m.Raw, f.ProbeError, f.ScannedAt.Unix())
 	return err
@@ -503,7 +552,7 @@ func ProcessAlive(pid int) bool {
 }
 
 const fileCols = `f.id, f.volume_id, f.relpath, f.size, f.mtime_ns, f.inode, f.kind, f.container, f.duration_ms,
-	f.width, f.height, f.video_codec, f.audio_codec, f.bitrate, f.fps, f.sample_rate, f.channels,
+	f.width, f.height, f.video_codec, f.audio_codec, f.bitrate, f.video_bitrate, f.audio_bitrate, f.fps, f.sample_rate, f.channels,
 	f.tag_artist, f.tag_album, f.tag_title, f.tag_track, f.tag_year, f.tag_genre,
 	f.probe_error, f.scanned_at, f.missing_since, v.key, v.last_mount_path, v.last_mount_root,
 	CASE WHEN f.hash_size = f.size AND f.hash_mtime_ns = f.mtime_ns THEN f.partial_hash ELSE '' END,
@@ -516,7 +565,7 @@ func scanFile(rows interface{ Scan(...any) error }, extra ...any) (File, error) 
 	var mountPath, mountRoot string
 	m := &f.Meta
 	dest := []any{&f.ID, &f.VolumeID, &f.RelPath, &f.Size, &f.MtimeNS, &inode, &f.Kind, &m.Container, &m.DurationMS,
-		&m.Width, &m.Height, &m.VideoCodec, &m.AudioCodec, &m.Bitrate, &m.FPS, &m.SampleRate, &m.Channels,
+		&m.Width, &m.Height, &m.VideoCodec, &m.AudioCodec, &m.Bitrate, &m.VideoBitrate, &m.AudioBitrate, &m.FPS, &m.SampleRate, &m.Channels,
 		&m.Tags.Artist, &m.Tags.Album, &m.Tags.Title, &m.Tags.Track, &m.Tags.Year, &m.Tags.Genre,
 		&f.ProbeError, &scanned, &missing, &f.VolumeKey, &mountPath, &mountRoot, &f.PartialHash, &f.FullHash}
 	if err := rows.Scan(append(dest, extra...)...); err != nil {
@@ -547,17 +596,35 @@ func (c *DB) GetFile(volumeID int64, relpath string) (*File, error) {
 	return &f, nil
 }
 
-var sortCols = map[string]string{
-	"path": "v.key, f.relpath", "size": "f.size", "duration": "f.duration_ms",
-	"res": "min(f.width, f.height)", "mtime": "f.mtime_ns", "bitrate": "f.bitrate",
-}
-
 // Query lists files matching flt. volumeID 0 means all volumes; prefix applies only when a
-// volume is given.
+// volume is given. Results are in path order unless flt.Sorts says otherwise.
 func (c *DB) Query(volumeID int64, prefix string, flt filter.Filter) ([]File, error) {
 	var where []string
 	var args []any
 	add := func(clause string, a ...any) { where = append(where, clause); args = append(args, a...) }
+	rng := func(col string, lo, hi any, loSet, hiSet bool) {
+		if loSet {
+			add(col+" >= ?", lo)
+		}
+		if hiSet {
+			add(col+" <= ? AND "+col+" > 0", hi) // unknown (0) values never satisfy a maximum
+		}
+	}
+	in := func(expr string, vals []string) {
+		if len(vals) == 0 {
+			return
+		}
+		a := make([]any, len(vals))
+		for i, v := range vals {
+			a[i] = v
+		}
+		add(expr+" IN ("+placeholders(len(vals))+")", a...)
+	}
+	contains := func(col, sub string) {
+		if sub != "" {
+			add("instr(lower("+col+"), lower(?)) > 0", sub)
+		}
+	}
 	if volumeID != 0 {
 		add("f.volume_id = ?", volumeID)
 		clause, a := prefixClause(prefix)
@@ -568,6 +635,9 @@ func (c *DB) Query(volumeID int64, prefix string, flt filter.Filter) ([]File, er
 	} else {
 		add("f.missing_since IS NULL")
 	}
+	if flt.Errors {
+		add("f.probe_error != ''")
+	}
 	if flt.Kind != "" {
 		add("f.kind = ?", flt.Kind)
 	}
@@ -577,18 +647,13 @@ func (c *DB) Query(volumeID int64, prefix string, flt filter.Filter) ([]File, er
 	if flt.MaxSize > 0 {
 		add("f.size <= ?", flt.MaxSize)
 	}
-	if flt.MinDurationMS > 0 {
-		add("f.duration_ms >= ?", flt.MinDurationMS)
-	}
-	if flt.MaxDurationMS > 0 {
-		add("f.duration_ms <= ?", flt.MaxDurationMS)
-	}
-	if flt.MinRes > 0 {
-		add("min(f.width, f.height) >= ?", flt.MinRes)
-	}
-	if flt.MaxRes > 0 {
-		add("min(f.width, f.height) <= ? AND f.width > 0", flt.MaxRes)
-	}
+	rng("f.duration_ms", flt.MinDurationMS, flt.MaxDurationMS, flt.MinDurationMS > 0, flt.MaxDurationMS > 0)
+	rng("min(f.width, f.height)", flt.MinRes, flt.MaxRes, flt.MinRes > 0, flt.MaxRes > 0)
+	rng("f.bitrate", flt.MinBitrate, flt.MaxBitrate, flt.MinBitrate > 0, flt.MaxBitrate > 0)
+	rng("f.video_bitrate", flt.MinVBitrate, flt.MaxVBitrate, flt.MinVBitrate > 0, flt.MaxVBitrate > 0)
+	rng("f.audio_bitrate", flt.MinABitrate, flt.MaxABitrate, flt.MinABitrate > 0, flt.MaxABitrate > 0)
+	rng("f.fps", flt.MinFPS, flt.MaxFPS, flt.MinFPS > 0, flt.MaxFPS > 0)
+	rng("f.tag_year", flt.MinYear, flt.MaxYear, flt.MinYear > 0, flt.MaxYear > 0)
 	if len(flt.Codecs) > 0 {
 		ph := placeholders(len(flt.Codecs))
 		a := make([]any, 0, 2*len(flt.Codecs))
@@ -599,25 +664,31 @@ func (c *DB) Query(volumeID int64, prefix string, flt filter.Filter) ([]File, er
 		}
 		add("(lower(f.video_codec) IN ("+ph+") OR lower(f.audio_codec) IN ("+ph+"))", a...)
 	}
-	if len(flt.Exts) > 0 {
-		a := make([]any, len(flt.Exts))
-		for i, e := range flt.Exts {
-			a[i] = e
+	in("lower(f.video_codec)", flt.VCodecs)
+	in("lower(f.audio_codec)", flt.ACodecs)
+	in("f.ext", flt.Exts)
+	if len(flt.Containers) > 0 {
+		var ors []string
+		for _, c := range flt.Containers {
+			ors = append(ors, "instr(lower(f.container), ?) > 0")
+			args = append(args, strings.ToLower(c))
 		}
-		add("f.ext IN ("+placeholders(len(flt.Exts))+")", a...)
+		where = append(where, "("+strings.Join(ors, " OR ")+")")
 	}
-	order := sortCols[flt.Sort]
-	if order == "" {
-		order = sortCols["path"]
+	contains("f.relpath", flt.Path)
+	contains("f.tag_artist", flt.Artist)
+	contains("f.tag_album", flt.Album)
+	contains("f.tag_title", flt.Title)
+	contains("f.tag_genre", flt.Genre)
+	if !flt.ModifiedAfter.IsZero() {
+		add("f.mtime_ns >= ?", flt.ModifiedAfter.UnixNano())
 	}
-	if flt.Desc {
-		order = strings.ReplaceAll(order, ",", " DESC,") + " DESC"
+	if !flt.ModifiedBefore.IsZero() {
+		add("f.mtime_ns <= ?", flt.ModifiedBefore.UnixNano())
 	}
-	q := `SELECT ` + fileCols + ` FROM files f JOIN volumes v ON v.id = f.volume_id WHERE ` + strings.Join(where, " AND ") + ` ORDER BY ` + order
-	if flt.Sort != "" && flt.Sort != "path" {
-		q += ", v.key, f.relpath"
-	}
-	if flt.Limit > 0 {
+	q := `SELECT ` + fileCols + ` FROM files f JOIN volumes v ON v.id = f.volume_id WHERE ` + strings.Join(where, " AND ") + ` ORDER BY v.key, f.relpath`
+	// The limit can only go into SQL when nothing is filtered or sorted afterwards.
+	if flt.Limit > 0 && flt.Name == "" && len(flt.Sorts) == 0 {
 		q += fmt.Sprintf(" LIMIT %d", flt.Limit)
 	}
 	rows, err := c.db.Query(q, args...)
@@ -626,14 +697,25 @@ func (c *DB) Query(volumeID int64, prefix string, flt filter.Filter) ([]File, er
 	}
 	defer rows.Close()
 	var out []File
+	name := strings.ToLower(flt.Name)
 	for rows.Next() {
 		f, err := scanFile(rows)
 		if err != nil {
 			return nil, err
 		}
+		if name != "" && !strings.Contains(strings.ToLower(filepath.Base(f.RelPath)), name) {
+			continue
+		}
 		out = append(out, f)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	SortFiles(out, flt.Sorts)
+	if flt.Limit > 0 && len(out) > flt.Limit {
+		out = out[:flt.Limit]
+	}
+	return out, nil
 }
 
 func placeholders(n int) string {

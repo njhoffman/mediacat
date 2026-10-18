@@ -198,6 +198,24 @@ probing ~7 files/s. A first scan of the full share (~11k media files) should tak
 Measured on the share: full hashing ran at ~37 MB/s with 2 workers (6 large candidates,
 3.5 minutes); cached re-runs take well under a second.
 
+## Config, list fields, bitrates (between phases 2 and 3)
+
+- Config at `$XDG_CONFIG_HOME/mediacat.yaml` (`--config`, `MEDIACAT_CONFIG`), written with
+  commented defaults on first run. Precedence: flag, env, config, built-in. Missing keys keep
+  their defaults; unknown keys are errors.
+- `list`: filters for every field (bitrates, fps, year, codecs, container, name/path/tag
+  text, modified date), multi-key `--sort` with "-" for descending (unknown values last),
+  and `--columns` (full list, or +field/-field adjustments; sorted fields are added unless
+  the columns are given outright). Defaults come from `list.columns` / `list.audio_columns`.
+- Size, duration and resolution cells shade pale yellow to bold red between
+  `list.highlight.*.warn` and `.max` (defaults 500M-4G, 30m-2h, 1920x1080-3840x2160 by
+  pixel count).
+- Dupes keep rule `paths` with `dupes.preferred_paths` (default `/sorted`, `^incoming`):
+  case-insensitive substrings, "^" avoids; an avoided match outweighs a preferred one.
+- Per-stream video and audio bitrates are recorded (stream `bit_rate`, else mkvmerge `BPS`
+  tags, else derived from the container rate). Upgrading backfills them from stored ffprobe
+  JSON; files whose streams report no rate at all stay unknown until re-probed.
+
 ## Phase 3: interactive duplicate review
 
 - Bubbletea TUI over duplicate groups: side-by-side metadata, keep-policy preselection,

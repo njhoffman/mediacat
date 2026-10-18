@@ -35,6 +35,7 @@ type dupesFlags struct {
 	keep      string
 	prefer    []string
 	avoid     []string
+	paths     []string
 	trash     bool
 	del       bool
 	moveTo    string
@@ -92,12 +93,14 @@ always asks you to type "delete".`,
 	}
 	f := cmd.Flags()
 	f.BoolVar(&df.all, "all", false, "search every mounted volume instead of path")
-	f.StringVar(&df.depth, "depth", "full", "size, partial or full")
+	d := a.cfg.Dupes
+	f.StringVar(&df.depth, "depth", d.Depth, "size, partial or full")
 	f.StringVarP(&df.kind, "type", "t", "", "only video, audio or image")
-	f.StringVar(&df.minSize, "min-size", "1", "ignore files smaller than this, e.g. 1M")
-	f.StringVar(&df.keep, "keep", dupes.DefaultPolicy, "rules choosing the copy to keep, in order")
-	f.StringSliceVar(&df.prefer, "prefer", nil, "keep copies under this directory (repeatable, first wins)")
-	f.StringSliceVar(&df.avoid, "avoid", nil, "avoid keeping copies under this directory (repeatable)")
+	f.StringVar(&df.minSize, "min-size", d.MinSize, "ignore files smaller than this, e.g. 1M")
+	f.StringVar(&df.keep, "keep", d.Keep, "rules choosing the copy to keep, in order")
+	f.StringSliceVar(&df.prefer, "prefer", d.Prefer, "keep copies under this directory (repeatable, first wins)")
+	f.StringSliceVar(&df.avoid, "avoid", d.Avoid, "avoid keeping copies under this directory (repeatable)")
+	f.StringSliceVar(&df.paths, "prefer-path", d.PreferredPaths, `"paths" rule: prefer copies whose path contains this; "^x" avoids x (repeatable, case-insensitive)`)
 	f.BoolVar(&df.trash, "trash", false, "move extra copies to the trash on their own drive")
 	f.BoolVar(&df.del, "delete", false, "permanently delete extra copies")
 	f.StringVar(&df.moveTo, "move-to", "", "move extra copies under this directory")
@@ -105,8 +108,8 @@ always asks you to type "delete".`,
 	f.BoolVarP(&df.yes, "yes", "y", false, "skip the confirmation for --trash and --move-to (never for --delete)")
 	f.BoolVar(&df.asJSON, "json", false, "print groups as JSON")
 	f.StringVar(&df.export, "export", "", "write all groups to a .csv or .json file")
-	f.IntVarP(&df.limit, "limit", "n", 20, "groups to show (0 for all)")
-	f.IntVarP(&df.workers, "workers", "j", 0, "parallel hashing (default: 2 network, 1 spinning disk, 4 otherwise)")
+	f.IntVarP(&df.limit, "limit", "n", d.Limit, "groups to show (0 for all)")
+	f.IntVarP(&df.workers, "workers", "j", d.Workers, "parallel hashing (0: 2 network, 1 spinning disk, 4 otherwise)")
 	f.BoolVar(&df.showFiles, "dry-run-files", false, "list every file the action would touch")
 	return cmd
 }
@@ -180,6 +183,9 @@ func (a *app) runDupes(dir string, df dupesFlags) error {
 	}
 	policy, err := dupes.ParsePolicy(df.keep, prefer, avoid)
 	if err != nil {
+		return err
+	}
+	if err := policy.SetPathPatterns(df.paths); err != nil {
 		return err
 	}
 	if err := a.open(); err != nil {
@@ -497,7 +503,7 @@ func (a *app) describePlan(p actions.Plan, trasher *actions.Trasher) (int, []str
 			}
 			lines = append(lines, fmt.Sprintf("%s from another drive: copied, verified, then removed (%s free).", ui.Bytes(cross), ui.Bytes(int64(free))))
 		}
-		if strings.HasPrefix(p.MoveTo+"/", p.Root+"/") && !scan.ExcludedByDefault(p.MoveTo, p.Root) {
+		if strings.HasPrefix(p.MoveTo+"/", p.Root+"/") && !scan.Excluded(p.MoveTo, p.Root, a.cfg.Scan.Exclude) {
 			lines = append(lines, "Note: the target is inside the searched directory, so moved copies will be found again.")
 		}
 		lines = append(lines, fmt.Sprintf("One copy of each of the %s groups is kept. Undo with mediacat undo.", ui.Count(countGroups(p))))
@@ -543,7 +549,7 @@ func (a *app) printOutcome(kind string, p actions.Plan, out *actions.Outcome) {
 		fmt.Fprintf(w, "Undo with: %s\n", ui.Bold.Render(fmt.Sprintf("mediacat undo %d", out.BatchID)))
 	}
 	if kind == catalog.ActionTrash && out.Done > 0 {
-		fmt.Fprintf(w, "%s\n", ui.Dim.Render("Space is freed when the trash is emptied: mediacat trash "+p.Root+" --empty"))
+		fmt.Fprintf(w, "%s\n", ui.Dim.Render("Space is freed when the trash is emptied: mediacat trash "+ui.Quote(p.Root)+" --empty"))
 	}
 	a.stashReminder(out.Paths)
 }

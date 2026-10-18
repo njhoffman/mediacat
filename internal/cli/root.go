@@ -14,7 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/njhoffman/mediacat/internal/catalog"
-	"github.com/njhoffman/mediacat/internal/stash"
+	"github.com/njhoffman/mediacat/internal/config"
 	"github.com/njhoffman/mediacat/internal/ui"
 	"github.com/njhoffman/mediacat/internal/volume"
 )
@@ -38,6 +38,9 @@ type app struct {
 	// interactive reports whether prompts can be answered; tests override it.
 	interactive func() bool
 
+	cfg        config.Config
+	configPath string
+
 	db  *catalog.DB
 	res *volume.Resolver
 }
@@ -50,11 +53,22 @@ func Execute(version string) int {
 }
 
 func (a *app) run(version string, args []string) int {
+	// The config supplies flag defaults, so it is loaded before the commands are built.
+	a.configPath = configPathFrom(args)
+	cfg, created, err := config.Load(a.configPath)
+	if err != nil {
+		fmt.Fprintln(a.stderr, ui.Err.Render("error: ")+err.Error())
+		return 1
+	}
+	a.cfg = cfg
+	if created {
+		fmt.Fprintln(a.stderr, ui.Dim.Render("Created default config at "+a.configPath))
+	}
 	root := a.rootCmd(version)
 	root.SetArgs(args)
 	root.SetOut(a.stdout)
 	root.SetErr(a.stderr)
-	err := root.Execute()
+	err = root.Execute()
 	if a.db != nil {
 		a.db.Close()
 	}
@@ -69,8 +83,28 @@ func (a *app) run(version string, args []string) int {
 	}
 }
 
+// configPathFrom finds --config in args before cobra parses them, falling back to
+// MEDIACAT_CONFIG and then ~/.config/mediacat.yaml.
+func configPathFrom(args []string) string {
+	for i, arg := range args {
+		if arg == "--" {
+			break
+		}
+		if v, ok := strings.CutPrefix(arg, "--config="); ok {
+			return config.Expand(v)
+		}
+		if arg == "--config" && i+1 < len(args) {
+			return config.Expand(args[i+1])
+		}
+	}
+	if v := os.Getenv("MEDIACAT_CONFIG"); v != "" {
+		return config.Expand(v)
+	}
+	return config.DefaultPath()
+}
+
 func (a *app) rootCmd(version string) *cobra.Command {
-	staleDefault := 30
+	staleDefault := a.cfg.StaleDays
 	if v, err := strconv.Atoi(os.Getenv("MEDIACAT_STALE_DAYS")); err == nil {
 		staleDefault = v
 	}
@@ -94,10 +128,12 @@ Run without arguments for a dashboard of what has been cataloged.`,
 		RunE: func(cmd *cobra.Command, _ []string) error { return a.dashboard() },
 	}
 	f := root.PersistentFlags()
-	f.StringVar(&a.dbPath, "db", catalog.DefaultPath(), "catalog database path")
+	var configFlag string
+	f.StringVar(&configFlag, "config", a.configPath, "config file (env MEDIACAT_CONFIG); created with defaults if missing")
+	f.StringVar(&a.dbPath, "db", a.cfg.Catalog, "catalog database path")
 	f.IntVar(&a.staleDays, "stale-days", staleDefault, "warn when the catalog for a path is older than this many days (0 disables; env MEDIACAT_STALE_DAYS)")
 	f.BoolVar(&a.noColor, "no-color", false, "disable colored output (also honors NO_COLOR)")
-	f.StringVar(&a.stashCfg, "stash-config", stash.DefaultConfig(), "Stash config, read to remind you when files in Stash libraries change")
+	f.StringVar(&a.stashCfg, "stash-config", a.cfg.StashConfig, "Stash config, read to remind you when files in Stash libraries change")
 	root.AddCommand(a.scanCmd(), a.listCmd(), a.infoCmd(), a.dupesCmd(), a.trashCmd(), a.historyCmd(), a.undoCmd())
 	return root
 }

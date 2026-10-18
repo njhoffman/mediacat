@@ -21,6 +21,7 @@ type harness struct {
 	stdin       string
 	interactive bool
 	stashCfg    string
+	config      string
 }
 
 func newHarness(t *testing.T) *harness {
@@ -30,7 +31,7 @@ func newHarness(t *testing.T) *harness {
 	// Keep the home trash on the test's own volume so nothing is trashed outside it.
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	return &harness{t: t, db: filepath.Join(t.TempDir(), "catalog.db"), dir: dir, now: time.Now(),
-		stashCfg: filepath.Join(t.TempDir(), "no-stash.yml")}
+		stashCfg: filepath.Join(t.TempDir(), "no-stash.yml"), config: filepath.Join(t.TempDir(), "mediacat.yaml")}
 }
 
 func (h *harness) run(args ...string) (stdout, stderr string, code int) {
@@ -38,7 +39,7 @@ func (h *harness) run(args ...string) (stdout, stderr string, code int) {
 	var out, errb bytes.Buffer
 	a := &app{stdin: strings.NewReader(h.stdin), stdout: &out, stderr: &errb, now: func() time.Time { return h.now },
 		interactive: func() bool { return h.interactive }}
-	code = a.run("test", append([]string{"--db", h.db, "--stash-config", h.stashCfg}, args...))
+	code = a.run("test", append([]string{"--config", h.config, "--db", h.db, "--stash-config", h.stashCfg}, args...))
 	return out.String(), errb.String(), code
 }
 
@@ -153,7 +154,12 @@ func TestBadFlagsAndArgs(t *testing.T) {
 	cases := [][]string{
 		{"list", "--min-size", "huge"},
 		{"list", "--min-res", "1080p", "--max-res", "720p"},
-		{"list", "--sort", "name"},
+		{"list", "--sort", "loudness"},
+		{"list", "--columns", "size,bogus"},
+		{"list", "--columns", "size,+res"},
+		{"list", "--min-vbitrate", "fast"},
+		{"list", "--modified-after", "yesterday"},
+		{"dupes", "--prefer-path", "^"},
 		{"list", "--type", "pdf"},
 		{"scan", filepath.Join(h.dir, "missing")},
 		{"info", notes},

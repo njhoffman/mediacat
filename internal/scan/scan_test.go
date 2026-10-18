@@ -357,11 +357,21 @@ func TestRealProbe(t *testing.T) {
 	}
 }
 
-func TestExcludedByDefault(t *testing.T) {
-	if !ExcludedByDefault("/mnt/nfs/trashbox/x", "/mnt/nfs") || !ExcludedByDefault("/mnt/nfs/a/.Trash-1000", "/mnt/nfs") {
+func TestExcluded(t *testing.T) {
+	if !Excluded("/mnt/nfs/trashbox/x", "/mnt/nfs", DefaultExcludes) || !Excluded("/mnt/nfs/a/.Trash-1000", "/mnt/nfs", DefaultExcludes) {
 		t.Error("trash dirs should be excluded")
 	}
-	if ExcludedByDefault("/mnt/nfs/holding", "/mnt/nfs") {
+	if Excluded("/mnt/nfs/holding", "/mnt/nfs", DefaultExcludes) {
 		t.Error("ordinary dir excluded")
+	}
+}
+
+func TestBaseExcludesReplaceDefaults(t *testing.T) {
+	e := newEnv(t)
+	e.write("trashbox/a.mp4", "a")
+	e.write("private/b.mp4", "b")
+	sum := e.scan(e.dir, Options{BaseExcludes: []string{"private"}})
+	if sum.Seen != 1 || !same(e.query(filter.Filter{}), []string{"a.mp4"}) {
+		t.Errorf("base excludes: %+v %v", sum, e.query(filter.Filter{}))
 	}
 }

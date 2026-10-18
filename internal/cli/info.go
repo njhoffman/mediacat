@@ -113,10 +113,11 @@ func (a *app) printInfo(f catalog.File, live bool) {
 		rows = append(rows, kv{"frame rate", fmt.Sprintf("%.3f fps", m.FPS)})
 	}
 	if m.VideoCodec != "" {
-		rows = append(rows, kv{"video codec", m.VideoCodec})
+		rows = append(rows, kv{"video codec", m.VideoCodec}, kv{"video bitrate", ui.Bitrate(m.VideoBitrate)})
 	}
 	if m.AudioCodec != "" {
-		rows = append(rows, kv{"audio codec", m.AudioCodec}, kv{"sample rate", fmt.Sprintf("%d Hz", m.SampleRate)}, kv{"channels", fmt.Sprint(m.Channels)})
+		rows = append(rows, kv{"audio codec", m.AudioCodec}, kv{"audio bitrate", ui.Bitrate(m.AudioBitrate)},
+			kv{"sample rate", fmt.Sprintf("%d Hz", m.SampleRate)}, kv{"channels", fmt.Sprint(m.Channels)})
 	}
 	t := m.Tags
 	for _, tag := range []kv{{"artist", t.Artist}, {"album", t.Album}, {"title", t.Title}, {"genre", t.Genre}} {

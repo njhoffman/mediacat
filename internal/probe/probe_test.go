@@ -39,6 +39,9 @@ func TestProbeMedia(t *testing.T) {
 	if v.Width != 320 || v.Height != 240 || v.VideoCodec != "h264" || v.AudioCodec != "aac" {
 		t.Errorf("video: %+v", v)
 	}
+	if v.VideoBitrate <= 0 || v.AudioBitrate <= 0 {
+		t.Errorf("stream bitrates: video=%d audio=%d", v.VideoBitrate, v.AudioBitrate)
+	}
 	if v.DurationMS < 900 || v.DurationMS > 1200 || v.FPS < 24.9 || v.FPS > 25.1 || len(v.Raw) == 0 {
 		t.Errorf("video duration/fps/raw: %d %f %d", v.DurationMS, v.FPS, len(v.Raw))
 	}
@@ -48,7 +51,7 @@ func TestProbeMedia(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Tags{Artist: "Test Artist", Album: "Test Album", Title: "Test Title", Genre: "Rock", Track: 3, Year: 2021}
-	if a.AudioCodec != "mp3" || a.VideoCodec != "" || a.Tags != want || a.SampleRate != 44100 {
+	if a.AudioCodec != "mp3" || a.VideoCodec != "" || a.Tags != want || a.SampleRate != 44100 || a.AudioBitrate <= 0 || a.VideoBitrate != 0 {
 		t.Errorf("audio: %+v", a)
 	}
 
@@ -116,5 +119,45 @@ func TestHelpers(t *testing.T) {
 	tg := tagsFromMap(map[string]string{"ARTIST": "A", "track": "3/12", "date": "2019-05-01"})
 	if tg.Artist != "A" || tg.Track != 3 || tg.Year != 2019 {
 		t.Errorf("tagsFromMap = %+v", tg)
+	}
+}
+
+func TestFromJSONBitrates(t *testing.T) {
+	stream := func(typ, codec, br string, tags string) string {
+		return `{"codec_type":"` + typ + `","codec_name":"` + codec + `","bit_rate":"` + br + `","tags":{` + tags + `}}`
+	}
+	doc := func(formatBR string, streams ...string) []byte {
+		out := `{"format":{"format_name":"matroska,webm","duration":"60.0","bit_rate":"` + formatBR + `"},"streams":[`
+		for i, s := range streams {
+			if i > 0 {
+				out += ","
+			}
+			out += s
+		}
+		return []byte(out + "]}")
+	}
+	cases := []struct {
+		name         string
+		raw          []byte
+		kind         string
+		video, audio int64
+	}{
+		{"stream rates", doc("5000000", stream("video", "h264", "4800000", ""), stream("audio", "aac", "192000", "")), filter.KindVideo, 4800000, 192000},
+		{"mkv BPS tags", doc("5000000", stream("video", "hevc", "", `"BPS-eng":"4500000"`), stream("audio", "opus", "", `"BPS":"128000"`)), filter.KindVideo, 4500000, 128000},
+		{"derived video", doc("5000000", stream("video", "h264", "", ""), stream("audio", "aac", "", `"BPS":"200000"`)), filter.KindVideo, 4800000, 200000},
+		{"unknown audio blocks derivation", doc("5000000", stream("video", "h264", "", ""), stream("audio", "aac", "", "")), filter.KindVideo, 0, 0},
+		{"audio only", doc("320000", stream("audio", "flac", "", "")), filter.KindAudio, 0, 320000},
+	}
+	for _, c := range cases {
+		r, err := FromJSON(c.raw, c.kind)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if r.VideoBitrate != c.video || r.AudioBitrate != c.audio {
+			t.Errorf("%s: video=%d audio=%d, want %d %d", c.name, r.VideoBitrate, r.AudioBitrate, c.video, c.audio)
+		}
+	}
+	if _, err := FromJSON([]byte("not json"), filter.KindVideo); err == nil {
+		t.Error("bad JSON should error")
 	}
 }

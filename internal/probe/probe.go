@@ -61,12 +61,15 @@ type Result struct {
 	Height     int
 	VideoCodec string
 	AudioCodec string
-	Bitrate    int64
+	Bitrate    int64 // overall container rate, bits/s
 	FPS        float64
-	SampleRate int
-	Channels   int
-	Tags       Tags
-	Raw        []byte // ffprobe JSON, nil when the file was read without ffprobe
+	// Average stream rates in bits/s; 0 when neither ffprobe nor the stream tags report one.
+	VideoBitrate int64
+	AudioBitrate int64
+	SampleRate   int
+	Channels     int
+	Tags         Tags
+	Raw          []byte // ffprobe JSON, nil when the file was read without ffprobe
 }
 
 // ErrTransient marks failures that say nothing about the file itself (network errors,
@@ -170,13 +173,21 @@ func (p Prober) ffprobe(ctx context.Context, path, kind string) (Result, error) 
 		}
 		return Result{}, errors.New(firstLine(msg))
 	}
+	return FromJSON(stdout.Bytes(), kind)
+}
+
+// FromJSON builds a Result from ffprobe's -show_format -show_streams JSON output. It is
+// also used to re-derive fields from JSON already stored in the catalog.
+func FromJSON(raw []byte, kind string) (Result, error) {
 	var out ffOutput
-	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+	if err := json.Unmarshal(raw, &out); err != nil {
 		return Result{}, fmt.Errorf("parsing ffprobe output: %w", err)
 	}
-	r := Result{Container: out.Format.FormatName, Raw: compact(stdout.Bytes())}
+	r := Result{Container: out.Format.FormatName, Raw: compact(raw)}
 	r.DurationMS = secondsToMS(out.Format.Duration)
 	r.Bitrate, _ = strconv.ParseInt(out.Format.BitRate, 10, 64)
+	var audioTotal int64
+	audioStreams, audioKnown := 0, 0
 	for _, s := range out.Streams {
 		switch s.CodecType {
 		case "video":
@@ -186,22 +197,38 @@ func (p Prober) ffprobe(ctx context.Context, path, kind string) (Result, error) 
 			}
 			r.VideoCodec, r.Width, r.Height = s.CodecName, s.Width, s.Height
 			r.FPS = parseRate(s.AvgFrameRate)
+			r.VideoBitrate = streamBitrate(s)
 			if r.DurationMS == 0 {
 				r.DurationMS = secondsToMS(s.Duration)
 			}
 		case "audio":
+			audioStreams++
+			br := streamBitrate(s)
+			if br > 0 {
+				audioKnown++
+				audioTotal += br
+			}
 			if r.AudioCodec != "" {
 				continue
 			}
 			r.AudioCodec, r.Channels = s.CodecName, s.Channels
 			r.SampleRate, _ = strconv.Atoi(s.SampleRate)
+			r.AudioBitrate = br
 			if r.DurationMS == 0 {
 				r.DurationMS = secondsToMS(s.Duration)
 			}
 		}
 	}
+	// Containers like MKV often omit per-stream rates. Derive what we can from the overall
+	// rate: video is what remains after every audio stream, audio-only files are all audio.
+	if r.VideoCodec != "" && r.VideoBitrate == 0 && r.Bitrate > 0 && audioKnown == audioStreams && r.Bitrate > audioTotal {
+		r.VideoBitrate = r.Bitrate - audioTotal
+	}
+	if r.VideoCodec == "" && r.AudioBitrate == 0 && audioStreams == 1 {
+		r.AudioBitrate = r.Bitrate
+	}
 	if kind == filter.KindImage {
-		r.DurationMS, r.FPS = 0, 0
+		r.DurationMS, r.FPS, r.VideoBitrate = 0, 0, 0
 	}
 	if kind == filter.KindAudio {
 		r.Tags = tagsFromMap(out.Format.Tags)
@@ -213,6 +240,22 @@ func (p Prober) ffprobe(ctx context.Context, path, kind string) (Result, error) 
 		return r, errors.New("no audio or video streams")
 	}
 	return r, nil
+}
+
+// streamBitrate reads a stream's average bit rate, falling back to the BPS statistics tag
+// mkvmerge writes ("BPS" or "BPS-eng").
+func streamBitrate(s ffStream) int64 {
+	if n, err := strconv.ParseInt(s.BitRate, 10, 64); err == nil && n > 0 {
+		return n
+	}
+	for k, v := range s.Tags {
+		if strings.EqualFold(k, "BPS") || strings.HasPrefix(strings.ToUpper(k), "BPS-") {
+			if n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil && n > 0 {
+				return n
+			}
+		}
+	}
+	return 0
 }
 
 // readTags reads embedded tags with dhowden/tag, which handles ID3v1/v2, MP4, FLAC and

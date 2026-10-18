@@ -128,3 +128,34 @@ func TestBanner(t *testing.T) {
 		t.Errorf("banner:\n%s", b)
 	}
 }
+
+func TestQuote(t *testing.T) {
+	cases := map[string]string{
+		"/mnt/nfs/Stash": "/mnt/nfs/Stash", "/mnt/nfs/Stash/Unsorted/Evan Stone": "'/mnt/nfs/Stash/Unsorted/Evan Stone'",
+		"it's": `'it'\''s'`, "": "''", "$HOME": "'$HOME'", "a(1).mp4": "'a(1).mp4'",
+	}
+	for in, want := range cases {
+		if got := Quote(in); got != want {
+			t.Errorf("Quote(%q) = %s want %s", in, got, want)
+		}
+	}
+}
+
+func TestHeat(t *testing.T) {
+	if Heat(0) != nil || Heat(-1) != nil {
+		t.Error("no style at or under the threshold")
+	}
+	slight, mid, max := Heat(0.01), Heat(0.6), Heat(5)
+	if slight == nil || mid == nil || max == nil {
+		t.Fatal("expected styles")
+	}
+	if slight.GetBold() || !mid.GetBold() || !max.GetBold() {
+		t.Error("bold should start at the halfway point")
+	}
+	if slight == max || Heat(1) != max {
+		t.Error("levels should map to distinct steps, clamped at 1")
+	}
+	if blend(heatDark, 0) != "#ede3a1" || blend(heatDark, 1) != "#ff4d4d" {
+		t.Errorf("gradient ends: %s %s", blend(heatDark, 0), blend(heatDark, 1))
+	}
+}

@@ -103,11 +103,22 @@ func Age(t, now time.Time) string {
 // It returns "" when the data is fresh.
 func Stale(last *time.Time, days int, now time.Time, what string) string {
 	if last == nil {
-		return fmt.Sprintf("No completed scan covers %s. Run: mediacat scan %s", what, what)
+		return fmt.Sprintf("No completed scan covers %s. Run: mediacat scan %s", what, Quote(what))
 	}
 	if days > 0 && now.Sub(*last) > time.Duration(days)*24*time.Hour {
 		return fmt.Sprintf("Catalog for %s was last updated %s (%s); results may be out of date. Run: mediacat scan %s",
-			what, Age(*last, now), last.Format("2006-01-02"), what)
+			what, Age(*last, now), last.Format("2006-01-02"), Quote(what))
 	}
 	return ""
+}
+
+// Quote makes a path safe to paste into a shell command, single-quoting it only when it
+// contains characters the shell would interpret.
+func Quote(s string) string {
+	if s != "" && strings.IndexFunc(s, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("/._-+:,@%=", r))
+	}) < 0 {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

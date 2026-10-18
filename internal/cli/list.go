@@ -17,16 +17,23 @@ import (
 )
 
 type listFlags struct {
-	all                    bool
-	asJSON                 bool
-	kind                   string
-	minSize, maxSize       string
-	minDur, maxDur         string
-	minRes, maxRes         string
-	codecs, exts           []string
-	sort                   string
-	desc, missing, errOnly bool
-	limit                  int
+	all, asJSON, desc, missing, errOnly bool
+	kind                                string
+	minSize, maxSize                    string
+	minDur, maxDur                      string
+	minRes, maxRes                      string
+	minBR, maxBR                        string
+	minVBR, maxVBR                      string
+	minABR, maxABR                      string
+	minFPS, maxFPS                      float64
+	minYear, maxYear                    int
+	codecs, vcodecs, acodecs            []string
+	containers, exts                    []string
+	name, path, artist, album           string
+	title, genre                        string
+	after, before                       string
+	sort, columns                       string
+	limit                               int
 }
 
 func (a *app) listCmd() *cobra.Command {
@@ -38,16 +45,33 @@ func (a *app) listCmd() *cobra.Command {
 catalog without touching the files. Use --all to list every volume, including ones
 that are not mounted.
 
+Fields (for --sort and --columns):
+  ` + wrapFields() + `
+
+Sorting: --sort takes comma-separated fields, "-" prefix for descending
+(--sort -size,duration). Files missing a value always sort last. Fields you sort by
+are added to the table when they are not already shown.
+
+Columns: --columns size,duration,path replaces the columns; +field adds to and
+-field removes from the defaults (--columns +vbitrate,+abitrate,-codec).
+
 Sizes take binary units (500M, 1.5G). Durations take seconds, m:ss, h:mm:ss or Go
 durations (90, 5:00, 1:30:00, 1h30m). Resolutions compare the short side of the
-frame, so portrait and landscape video match alike (720p, 1080p, 4k, 1920x1080).`,
-		Example: `  mediacat list --type video --min-res 1080p --min-duration 10m
-  mediacat list --type audio --codec mp3 --sort size --desc --limit 20
-  mediacat list --all --missing
-  mediacat list /mnt/nfs/Stash --ext mkv,avi --json`,
+frame (720p, 1080p, 4k, 1920x1080). Bitrates take decimal units (128k, 4.5M).
+Dates take 2026-01-31 or an age (7d, 2w, 3mo). Text filters match anywhere,
+ignoring case.
+
+Size, duration and resolution cells are tinted from yellow to bold red as values
+exceed the list.highlight thresholds in the config.`,
+		Example: `  mediacat list --type video --min-res 1080p --min-duration 10m --sort -size
+  mediacat list --type audio --artist beatles --sort album,track --columns +album,+track
+  mediacat list --vcodec mpeg4,wmv3 --columns name,size,vcodec,vbitrate --sort -vbitrate
+  mediacat list --min-vbitrate 20M --sort -vbitrate
+  mediacat list --modified-after 7d --sort -mtime
+  mediacat list --all --missing --json`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			flt, err := lf.parse()
+			flt, err := lf.parse(a.now())
 			if err != nil {
 				return err
 			}
@@ -71,29 +95,73 @@ frame, so portrait and landscape video match alike (720p, 1080p, 4k, 1920x1080).
 	f.StringVar(&lf.maxDur, "max-duration", "", "maximum duration")
 	f.StringVar(&lf.minRes, "min-res", "", "minimum resolution, e.g. 720p, 4k, 1920x1080")
 	f.StringVar(&lf.maxRes, "max-res", "", "maximum resolution")
+	f.StringVar(&lf.minBR, "min-bitrate", "", "minimum overall bitrate, e.g. 5M")
+	f.StringVar(&lf.maxBR, "max-bitrate", "", "maximum overall bitrate")
+	f.StringVar(&lf.minVBR, "min-vbitrate", "", "minimum video stream bitrate")
+	f.StringVar(&lf.maxVBR, "max-vbitrate", "", "maximum video stream bitrate")
+	f.StringVar(&lf.minABR, "min-abitrate", "", "minimum audio stream bitrate, e.g. 192k")
+	f.StringVar(&lf.maxABR, "max-abitrate", "", "maximum audio stream bitrate")
+	f.Float64Var(&lf.minFPS, "min-fps", 0, "minimum frame rate")
+	f.Float64Var(&lf.maxFPS, "max-fps", 0, "maximum frame rate")
+	f.IntVar(&lf.minYear, "min-year", 0, "minimum tag year")
+	f.IntVar(&lf.maxYear, "max-year", 0, "maximum tag year")
 	f.StringSliceVar(&lf.codecs, "codec", nil, "video or audio codec, e.g. h264,hevc,mp3 (repeatable)")
+	f.StringSliceVar(&lf.vcodecs, "vcodec", nil, "video codec (repeatable)")
+	f.StringSliceVar(&lf.acodecs, "acodec", nil, "audio codec (repeatable)")
+	f.StringSliceVar(&lf.containers, "container", nil, "container format, e.g. matroska,mp4 (repeatable)")
 	f.StringSliceVar(&lf.exts, "ext", nil, "file extension, e.g. mkv,avi (repeatable)")
-	f.StringVar(&lf.sort, "sort", "path", "sort by "+strings.Join(filter.SortKeys, ", "))
-	f.BoolVar(&lf.desc, "desc", false, "sort descending")
+	f.StringVar(&lf.name, "name", "", "file name contains")
+	f.StringVar(&lf.path, "path-contains", "", "path contains")
+	f.StringVar(&lf.artist, "artist", "", "artist tag contains")
+	f.StringVar(&lf.album, "album", "", "album tag contains")
+	f.StringVar(&lf.title, "title", "", "title tag contains")
+	f.StringVar(&lf.genre, "genre", "", "genre tag contains")
+	f.StringVar(&lf.after, "modified-after", "", "modified on or after, e.g. 2026-01-31 or 7d")
+	f.StringVar(&lf.before, "modified-before", "", "modified on or before")
+	f.StringVar(&lf.sort, "sort", a.cfg.List.Sort, `fields to sort by, "-" for descending, e.g. -size,duration`)
+	f.BoolVar(&lf.desc, "desc", false, "reverse every sort field")
+	f.StringVar(&lf.columns, "columns", "", "columns to show; +field/-field adjusts the defaults")
 	f.IntVarP(&lf.limit, "limit", "n", 0, "show at most this many files")
 	f.BoolVar(&lf.missing, "missing", false, "only files the last scan did not find on disk")
 	f.BoolVar(&lf.errOnly, "errors", false, "only files that could not be probed")
 	return cmd
 }
 
-func (lf listFlags) parse() (filter.Filter, error) {
-	f := filter.Filter{Kind: strings.ToLower(lf.kind), Sort: lf.sort, Desc: lf.desc, Limit: lf.limit, Missing: lf.missing,
-		Codecs: filter.SplitList(lf.codecs), Exts: filter.SplitList(lf.exts)}
+func wrapFields() string {
+	var lines []string
+	var cur []string
+	for _, f := range filter.Fields {
+		cur = append(cur, f)
+		if len(strings.Join(cur, " ")) > 72 {
+			lines = append(lines, strings.Join(cur[:len(cur)-1], " "))
+			cur = []string{f}
+		}
+	}
+	return strings.Join(append(lines, strings.Join(cur, " ")), "\n  ")
+}
+
+func (lf listFlags) parse(now time.Time) (filter.Filter, error) {
+	f := filter.Filter{Kind: strings.ToLower(lf.kind), Limit: lf.limit, Missing: lf.missing, Errors: lf.errOnly,
+		Codecs: filter.SplitList(lf.codecs), VCodecs: filter.SplitList(lf.vcodecs), ACodecs: filter.SplitList(lf.acodecs),
+		Containers: filter.SplitList(lf.containers), Exts: filter.SplitList(lf.exts),
+		MinFPS: lf.minFPS, MaxFPS: lf.maxFPS, MinYear: lf.minYear, MaxYear: lf.maxYear,
+		Name: lf.name, Path: lf.path, Artist: lf.artist, Album: lf.album, Title: lf.title, Genre: lf.genre}
 	var err error
-	parse := func(s string, fn func(string) (int64, error), dst *int64) {
+	num := func(s string, fn func(string) (int64, error), dst *int64) {
 		if s != "" && err == nil {
 			*dst, err = fn(s)
 		}
 	}
-	parse(lf.minSize, filter.ParseSize, &f.MinSize)
-	parse(lf.maxSize, filter.ParseSize, &f.MaxSize)
-	parse(lf.minDur, filter.ParseDuration, &f.MinDurationMS)
-	parse(lf.maxDur, filter.ParseDuration, &f.MaxDurationMS)
+	num(lf.minSize, filter.ParseSize, &f.MinSize)
+	num(lf.maxSize, filter.ParseSize, &f.MaxSize)
+	num(lf.minDur, filter.ParseDuration, &f.MinDurationMS)
+	num(lf.maxDur, filter.ParseDuration, &f.MaxDurationMS)
+	num(lf.minBR, filter.ParseBitrate, &f.MinBitrate)
+	num(lf.maxBR, filter.ParseBitrate, &f.MaxBitrate)
+	num(lf.minVBR, filter.ParseBitrate, &f.MinVBitrate)
+	num(lf.maxVBR, filter.ParseBitrate, &f.MaxVBitrate)
+	num(lf.minABR, filter.ParseBitrate, &f.MinABitrate)
+	num(lf.maxABR, filter.ParseBitrate, &f.MaxABitrate)
 	res := func(s string, dst *int) {
 		if s != "" && err == nil {
 			*dst, err = filter.ParseRes(s)
@@ -101,13 +169,43 @@ func (lf listFlags) parse() (filter.Filter, error) {
 	}
 	res(lf.minRes, &f.MinRes)
 	res(lf.maxRes, &f.MaxRes)
+	when := func(s string, dst *time.Time) {
+		if s != "" && err == nil {
+			*dst, err = filter.ParseTime(s, now)
+		}
+	}
+	when(lf.after, &f.ModifiedAfter)
+	when(lf.before, &f.ModifiedBefore)
+	if err == nil {
+		f.Sorts, err = filter.ParseSort(lf.sort)
+	}
 	if err != nil {
 		return f, err
+	}
+	if lf.desc {
+		for i := range f.Sorts {
+			f.Sorts[i].Desc = !f.Sorts[i].Desc
+		}
+		if len(f.Sorts) == 0 {
+			f.Sorts = []filter.SortKey{{Key: filter.FieldPath, Desc: true}}
+		}
+	}
+	// Plain path order is what the catalog returns already; skip the extra sort.
+	if len(f.Sorts) == 1 && f.Sorts[0] == (filter.SortKey{Key: filter.FieldPath}) {
+		f.Sorts = nil
 	}
 	return f, f.Validate()
 }
 
 func (a *app) runList(dir string, lf listFlags, flt filter.Filter) error {
+	defaults := a.cfg.List.Columns
+	if flt.Kind == filter.KindAudio {
+		defaults = a.cfg.List.AudioColumns
+	}
+	cols, err := resolveColumns(defaults, lf.columns, flt.Sorts)
+	if err != nil {
+		return err
+	}
 	var volID int64
 	var prefix, base string
 	if !lf.all {
@@ -132,26 +230,42 @@ func (a *app) runList(dir string, lf listFlags, flt filter.Filter) error {
 			return err
 		}
 	}
-	// --errors filters in Go: it's a display concern and keeps the catalog query simple.
 	files, err := a.db.Query(volID, prefix, flt)
 	if err != nil {
 		return err
-	}
-	if lf.errOnly {
-		kept := files[:0]
-		for _, f := range files {
-			if f.ProbeError != "" {
-				kept = append(kept, f)
-			}
-		}
-		files = kept
 	}
 	a.remap(files)
 	if lf.asJSON {
 		return a.listJSON(files)
 	}
-	a.listTable(files, flt, base)
+	a.listTable(files, cols, base)
 	return nil
+}
+
+func (a *app) listTable(files []catalog.File, fields []string, base string) {
+	if len(files) == 0 {
+		fmt.Fprintln(a.stderr, ui.Dim.Render("no matching files"))
+		return
+	}
+	flex := flexColumn(fields)
+	cols := make([]ui.Column, len(fields))
+	for i, name := range fields {
+		def := columnDefs[name]
+		cols[i] = ui.Column{Title: def.title, Right: def.right, Flex: name == flex, Style: def.style}
+	}
+	h := a.cfg.Highlights
+	var total int64
+	rows := make([][]ui.Cell, 0, len(files))
+	for _, f := range files {
+		total += f.Size
+		row := make([]ui.Cell, len(fields))
+		for i, name := range fields {
+			row[i] = cellFor(name, f, base, h)
+		}
+		rows = append(rows, row)
+	}
+	ui.Table(a.stdout, cols, rows, ui.Width(a.stdout))
+	fmt.Fprintln(a.stderr, ui.Dim.Render(fmt.Sprintf("%s files, %s", ui.Count(len(files)), ui.Bytes(total))))
 }
 
 // remap rewrites AbsPath for volumes now mounted somewhere other than their last mount.
@@ -170,56 +284,6 @@ func (a *app) remap(files []catalog.File) {
 			f.AbsPath, _ = volume.AbsPath(m[0], m[1], f.RelPath)
 		}
 	}
-}
-
-func (a *app) listTable(files []catalog.File, flt filter.Filter, base string) {
-	if len(files) == 0 {
-		fmt.Fprintln(a.stderr, ui.Dim.Render("no matching files"))
-		return
-	}
-	audio := flt.Kind == filter.KindAudio
-	cols := []ui.Column{
-		{Title: "SIZE", Right: true},
-		{Title: "DURATION", Right: true},
-	}
-	if audio {
-		cols = append(cols, ui.Column{Title: "CODEC"}, ui.Column{Title: "BITRATE", Right: true},
-			ui.Column{Title: "ARTIST", Style: ui.Accent}, ui.Column{Title: "TITLE"})
-	} else {
-		cols = append(cols, ui.Column{Title: "RES", Right: true}, ui.Column{Title: "CODEC"})
-	}
-	cols = append(cols, ui.Column{Title: "PATH", Flex: true})
-
-	errStyle := ui.Err
-	missStyle := ui.Warn
-	var total int64
-	rows := make([][]ui.Cell, 0, len(files))
-	for _, f := range files {
-		total += f.Size
-		m := f.Meta
-		codec := ui.Cell{Text: strings.Trim(m.VideoCodec+"/"+m.AudioCodec, "/")}
-		if audio {
-			codec.Text = m.AudioCodec
-		}
-		if f.ProbeError != "" {
-			codec = ui.Cell{Text: "error", Style: &errStyle}
-		}
-		cells := []ui.Cell{{Text: ui.Bytes(f.Size)}, {Text: ui.Duration(m.DurationMS)}}
-		if audio {
-			cells = append(cells, codec, ui.Cell{Text: ui.Bitrate(m.Bitrate)},
-				ui.Cell{Text: m.Tags.Artist}, ui.Cell{Text: m.Tags.Title})
-		} else {
-			cells = append(cells, ui.Cell{Text: ui.Res(m.Width, m.Height)}, codec)
-		}
-		p := displayPath(f, base)
-		pc := ui.Cell{Text: p}
-		if f.MissingSince != nil {
-			pc.Style = &missStyle
-		}
-		rows = append(rows, append(cells, pc))
-	}
-	ui.Table(a.stdout, cols, rows, ui.Width(a.stdout))
-	fmt.Fprintln(a.stderr, ui.Dim.Render(fmt.Sprintf("%s files, %s", ui.Count(len(files)), ui.Bytes(total))))
 }
 
 // displayPath shows files relative to the listed directory, or absolute with --all.
@@ -250,6 +314,8 @@ type fileJSON struct {
 	VideoCodec   string     `json:"video_codec,omitempty"`
 	AudioCodec   string     `json:"audio_codec,omitempty"`
 	Bitrate      int64      `json:"bitrate,omitempty"`
+	VideoBitrate int64      `json:"video_bitrate,omitempty"`
+	AudioBitrate int64      `json:"audio_bitrate,omitempty"`
 	FPS          float64    `json:"fps,omitempty"`
 	SampleRate   int        `json:"sample_rate,omitempty"`
 	Channels     int        `json:"channels,omitempty"`
@@ -273,7 +339,7 @@ func toJSON(f catalog.File) fileJSON {
 	j := fileJSON{Path: f.AbsPath, Volume: f.VolumeKey, RelPath: f.RelPath, Kind: f.Kind, Size: f.Size,
 		Modified: time.Unix(0, f.MtimeNS).UTC(), Container: m.Container, DurationMS: m.DurationMS,
 		Width: m.Width, Height: m.Height, VideoCodec: m.VideoCodec, AudioCodec: m.AudioCodec,
-		Bitrate: m.Bitrate, FPS: m.FPS, SampleRate: m.SampleRate, Channels: m.Channels,
+		Bitrate: m.Bitrate, VideoBitrate: m.VideoBitrate, AudioBitrate: m.AudioBitrate, FPS: m.FPS, SampleRate: m.SampleRate, Channels: m.Channels,
 		ProbeError: f.ProbeError, ScannedAt: f.ScannedAt.UTC(), MissingSince: f.MissingSince}
 	if t := m.Tags; t != (probe.Tags{}) {
 		j.Tags = &tagsJSON{t.Artist, t.Album, t.Title, t.Genre, t.Track, t.Year}

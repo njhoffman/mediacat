@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,8 +47,24 @@ func put(t *testing.T, db *DB, files ...File) {
 }
 
 func video(vol int64, rel string, size int64, w, h int, durMS int64, codec string) File {
-	return File{VolumeID: vol, RelPath: rel, Size: size, MtimeNS: 1, Kind: filter.KindVideo,
-		Meta: probe.Result{Width: w, Height: h, DurationMS: durMS, VideoCodec: codec, AudioCodec: "aac", Bitrate: size / 10}}
+	f := File{VolumeID: vol, RelPath: rel, Size: size, MtimeNS: 1, Kind: filter.KindVideo,
+		Meta: probe.Result{Width: w, Height: h, DurationMS: durMS, VideoCodec: codec, AudioCodec: "aac", Bitrate: size / 10,
+			VideoBitrate: size / 12, AudioBitrate: 128_000, FPS: 25}}
+	if codec == "av1" {
+		f.Meta.FPS = 60
+	}
+	if strings.HasSuffix(rel, ".mkv") {
+		f.Meta.Container = "matroska,webm"
+	}
+	return f
+}
+
+func sorts(spec string) []filter.SortKey {
+	k, err := filter.ParseSort(spec)
+	if err != nil {
+		panic(err)
+	}
+	return k
 }
 
 func paths(fs []File) []string {
@@ -174,9 +191,21 @@ func TestQueryFilters(t *testing.T) {
 		{"max res excludes unknown", filter.Filter{MaxRes: 720}, []string{"hd.mp4"}},
 		{"codec", filter.Filter{Codecs: []string{"hevc", "mp3"}}, []string{"fhd.mkv", "song.mp3"}},
 		{"ext", filter.Filter{Exts: []string{"mkv", "mp3"}}, []string{"fhd.mkv", "song.mp3"}},
-		{"sort size desc limit", filter.Filter{Sort: "size", Desc: true, Limit: 2}, []string{"uhd.mp4", "fhd.mkv"}},
-		{"sort res", filter.Filter{Kind: filter.KindVideo, MinRes: 1, Sort: "res"}, []string{"hd.mp4", "fhd.mkv", "portrait.mp4", "uhd.mp4"}},
-		{"sort path desc", filter.Filter{Kind: filter.KindVideo, MinRes: 1080, Desc: true}, []string{"uhd.mp4", "portrait.mp4", "fhd.mkv"}},
+		{"sort size desc limit", filter.Filter{Sorts: sorts("-size"), Limit: 2}, []string{"uhd.mp4", "fhd.mkv"}},
+		{"sort res by pixels, ties by path", filter.Filter{Kind: filter.KindVideo, MinRes: 1, Sorts: sorts("res")}, []string{"hd.mp4", "fhd.mkv", "portrait.mp4", "uhd.mp4"}},
+		{"sort path desc", filter.Filter{Kind: filter.KindVideo, MinRes: 1080, Sorts: sorts("-path")}, []string{"uhd.mp4", "portrait.mp4", "fhd.mkv"}},
+		{"unknown duration sorts last both ways", filter.Filter{Sorts: sorts("duration")}, []string{"portrait.mp4", "hd.mp4", "song.mp3", "fhd.mkv", "uhd.mp4", "broken.mp4"}},
+		{"unknown last descending", filter.Filter{Sorts: sorts("-duration"), Limit: 6}, []string{"uhd.mp4", "fhd.mkv", "song.mp3", "hd.mp4", "portrait.mp4", "broken.mp4"}},
+		{"multi-key", filter.Filter{Sorts: sorts("vcodec,-size")}, []string{"uhd.mp4", "hd.mp4", "portrait.mp4", "fhd.mkv", "song.mp3", "broken.mp4"}},
+		{"name filter then limit", filter.Filter{Name: "D.MP", Limit: 1}, []string{"hd.mp4"}},
+		{"name filter", filter.Filter{Name: "HD."}, []string{"fhd.mkv", "hd.mp4", "uhd.mp4"}},
+		{"path filter", filter.Filter{Path: "PORT"}, []string{"portrait.mp4"}},
+		{"vcodec", filter.Filter{VCodecs: []string{"hevc", "av1"}}, []string{"fhd.mkv", "uhd.mp4"}},
+		{"acodec", filter.Filter{ACodecs: []string{"mp3"}}, []string{"song.mp3"}},
+		{"min fps", filter.Filter{MinFPS: 50}, []string{"uhd.mp4"}},
+		{"vbitrate range", filter.Filter{MinVBitrate: 1, MaxVBitrate: 40_000_000}, []string{"hd.mp4", "portrait.mp4"}},
+		{"errors only", filter.Filter{Errors: true}, []string{"broken.mp4"}},
+		{"container", filter.Filter{Containers: []string{"MATROSKA"}}, []string{"fhd.mkv"}},
 	}
 	for _, c := range cases {
 		got, err := db.Query(vol, "", c.f)
@@ -281,5 +310,34 @@ func TestLatestCompleteScans(t *testing.T) {
 	}
 	if _, ok := got[other]; ok {
 		t.Error("never-scanned volume should be absent")
+	}
+}
+
+func TestBitrateBackfillOnUpgrade(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vol, _ := db.UpsertVolume(volume.Volume{Key: "k", MountPoint: "/x", MountRoot: "/"}, t0)
+	raw := []byte(`{"format":{"format_name":"mov,mp4","duration":"10","bit_rate":"5000000"},
+		"streams":[{"codec_type":"video","codec_name":"h264","bit_rate":"4800000"},{"codec_type":"audio","codec_name":"aac","bit_rate":"192000"}]}`)
+	put(t, db, File{VolumeID: vol, RelPath: "a.mp4", Size: 1, MtimeNS: 1, Kind: filter.KindVideo, Meta: probe.Result{Raw: raw}})
+	// Turn the catalog back into a version-2 one: no bitrate columns.
+	for _, q := range []string{`ALTER TABLE files DROP COLUMN video_bitrate`, `ALTER TABLE files DROP COLUMN audio_bitrate`, `PRAGMA user_version = 2`} {
+		if _, err := db.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+
+	db, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	f, _ := db.GetFile(vol, "a.mp4")
+	if f.Meta.VideoBitrate != 4_800_000 || f.Meta.AudioBitrate != 192_000 {
+		t.Errorf("backfill: video=%d audio=%d", f.Meta.VideoBitrate, f.Meta.AudioBitrate)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -30,7 +31,8 @@ on disk are marked missing; --prune removes them from the catalog instead.
 Ctrl-C stops after the files in progress and saves everything finished so far;
 running the same scan again continues where it left off.
 
-Trash and NAS metadata directories (` + fmt.Sprint(scan.DefaultExcludes) + `) are always skipped.`,
+Names under scan.exclude in the config (trash and NAS metadata folders by default)
+are always skipped: ` + strings.Join(a.cfg.Scan.Exclude, " "),
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dir := "."
@@ -40,15 +42,16 @@ Trash and NAS metadata directories (` + fmt.Sprint(scan.DefaultExcludes) + `) ar
 			if err := a.open(); err != nil {
 				return err
 			}
+			o.BaseExcludes = a.cfg.Scan.Exclude
 			return a.runScan(dir, o, timeout)
 		},
 	}
 	f := cmd.Flags()
-	f.IntVarP(&o.Workers, "workers", "j", 0, "parallel probes (default: 2 on network or spinning disks, up to 8 otherwise)")
+	f.IntVarP(&o.Workers, "workers", "j", a.cfg.Scan.Workers, "parallel probes (0: 2 on network or spinning disks, up to 8 otherwise)")
 	f.BoolVar(&o.Prune, "prune", false, "remove catalog entries for files no longer on disk instead of marking them missing")
 	f.BoolVar(&o.Force, "force", false, "re-probe every file, even unchanged ones")
 	f.StringSliceVar(&o.Excludes, "exclude", nil, "skip files and directories whose name matches this glob (repeatable)")
-	f.DurationVar(&timeout, "probe-timeout", 2*time.Minute, "give up on a single file after this long (retried next scan)")
+	f.DurationVar(&timeout, "probe-timeout", a.cfg.ProbeTimeout, "give up on a single file after this long (retried next scan)")
 	return cmd
 }
 
@@ -132,7 +135,7 @@ func (a *app) printScanSummary(s *scan.Summary) {
 	a.printFailures("Deferred", s.Deferred, ui.Warn)
 	a.printFailures("Could not read", s.WalkErrors, ui.Err)
 	if s.Interrupted {
-		fmt.Fprintf(w, "\n%s Run %s again to continue.\n", ui.Warn.Render("Progress was saved."), ui.Bold.Render("mediacat scan "+where))
+		fmt.Fprintf(w, "\n%s Run %s again to continue.\n", ui.Warn.Render("Progress was saved."), ui.Bold.Render("mediacat scan "+ui.Quote(where)))
 	}
 }
 

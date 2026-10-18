@@ -77,3 +77,39 @@ func TestPolicyTieBreakAndErrors(t *testing.T) {
 		t.Errorf("normalization: %v", p.Rules)
 	}
 }
+
+func TestPathsRule(t *testing.T) {
+	files := []catalog.File{
+		file("/mnt/nfs/Stash/Enhanced/Incoming/a.mp4", 100),
+		file("/mnt/nfs/Stash/SORTED/Stars/a.mp4", 300),
+		file("/mnt/nfs/Stash/Unsorted/a.mp4", 200),
+	}
+	p, _ := ParsePolicy("paths,oldest", nil, nil)
+	if err := p.SetPathPatterns([]string{"/sorted", "^incoming"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Choose(files); got != 1 {
+		t.Errorf("sorted should win (case-insensitive): kept %d", got)
+	}
+	// Without a preferred match, avoiding incoming leaves Unsorted, despite incoming being oldest.
+	if got := p.Choose([]catalog.File{files[0], files[2]}); got != 1 {
+		t.Errorf("^incoming should lose: kept %d", got)
+	}
+	// Plain "sorted" also matches "Unsorted": the earlier pattern ranks, ties fall to oldest.
+	q, _ := ParsePolicy("paths,oldest", nil, nil)
+	q.SetPathPatterns([]string{"sorted", "^incoming"})
+	if got := q.Choose([]catalog.File{files[1], files[2]}); got != 1 {
+		t.Errorf("both contain 'sorted', oldest should decide: kept %d", got)
+	}
+	// An avoided match outweighs a preferred one.
+	r, _ := ParsePolicy("paths", nil, nil)
+	r.SetPathPatterns([]string{"sorted", "^incoming"})
+	both := file("/lib/Sorted/Incoming/a.mp4", 1)
+	plain := file("/lib/other/a.mp4", 2)
+	if got := r.Choose([]catalog.File{both, plain}); got != 1 {
+		t.Errorf("avoid should outweigh prefer: kept %d", got)
+	}
+	if err := r.SetPathPatterns([]string{"^"}); err == nil {
+		t.Error("empty pattern accepted")
+	}
+}
