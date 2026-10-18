@@ -61,6 +61,8 @@ dupes:
   preferred_paths:
     - /sorted
     - "^incoming"
+  # Default destination for "move" in dupes --review and when --move-to is not given.
+  move_to: ""
   # Ignore files smaller than this.
   min_size: 1
   # Parallel hashing; 0 picks 2 on network volumes, 1 on spinning disks, 4 otherwise.
@@ -114,6 +116,7 @@ type Config struct {
 		Prefer         []string `yaml:"prefer"`
 		Avoid          []string `yaml:"avoid"`
 		PreferredPaths []string `yaml:"preferred_paths"`
+		MoveTo         string   `yaml:"move_to"`
 		MinSize        string   `yaml:"min_size"`
 		Workers        int      `yaml:"workers"`
 		Limit          int      `yaml:"limit"`
@@ -220,6 +223,7 @@ func parse(b []byte) (Config, error) {
 func (c *Config) finish() error {
 	c.Catalog = Expand(c.Catalog)
 	c.StashConfig = Expand(c.StashConfig)
+	c.Dupes.MoveTo = Expand(c.Dupes.MoveTo)
 	for i := range c.Dupes.Prefer {
 		c.Dupes.Prefer[i] = Expand(c.Dupes.Prefer[i])
 	}

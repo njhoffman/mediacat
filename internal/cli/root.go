@@ -15,6 +15,8 @@ import (
 
 	"github.com/njhoffman/mediacat/internal/catalog"
 	"github.com/njhoffman/mediacat/internal/config"
+	"github.com/njhoffman/mediacat/internal/dupes"
+	"github.com/njhoffman/mediacat/internal/review"
 	"github.com/njhoffman/mediacat/internal/ui"
 	"github.com/njhoffman/mediacat/internal/volume"
 )
@@ -37,6 +39,8 @@ type app struct {
 	now       func() time.Time
 	// interactive reports whether prompts can be answered; tests override it.
 	interactive func() bool
+	// reviewRun shows the duplicate reviewer; tests replace it.
+	reviewRun func([]dupes.Group, []review.Choice, review.Options) (review.Result, error)
 
 	cfg        config.Config
 	configPath string

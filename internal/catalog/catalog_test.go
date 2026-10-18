@@ -324,7 +324,7 @@ func TestBitrateBackfillOnUpgrade(t *testing.T) {
 		"streams":[{"codec_type":"video","codec_name":"h264","bit_rate":"4800000"},{"codec_type":"audio","codec_name":"aac","bit_rate":"192000"}]}`)
 	put(t, db, File{VolumeID: vol, RelPath: "a.mp4", Size: 1, MtimeNS: 1, Kind: filter.KindVideo, Meta: probe.Result{Raw: raw}})
 	// Turn the catalog back into a version-2 one: no bitrate columns.
-	for _, q := range []string{`ALTER TABLE files DROP COLUMN video_bitrate`, `ALTER TABLE files DROP COLUMN audio_bitrate`, `PRAGMA user_version = 2`} {
+	for _, q := range []string{`ALTER TABLE files DROP COLUMN video_bitrate`, `ALTER TABLE files DROP COLUMN audio_bitrate`, `DROP TABLE review_decisions`, `PRAGMA user_version = 2`} {
 		if _, err := db.db.Exec(q); err != nil {
 			t.Fatal(err)
 		}
@@ -339,5 +339,24 @@ func TestBitrateBackfillOnUpgrade(t *testing.T) {
 	f, _ := db.GetFile(vol, "a.mp4")
 	if f.Meta.VideoBitrate != 4_800_000 || f.Meta.AudioBitrate != 192_000 {
 		t.Errorf("backfill: video=%d audio=%d", f.Meta.VideoBitrate, f.Meta.AudioBitrate)
+	}
+}
+
+func TestReviewDecisions(t *testing.T) {
+	db, _ := openTest(t)
+	d := Decision{KeepVolume: "net://h/share", KeepRelPath: "Sorted/a.mp4", Action: ActionTrash}
+	if err := db.SaveDecision("h1", d, t0); err != nil {
+		t.Fatal(err)
+	}
+	d.Action = ActionMove
+	db.SaveDecision("h1", d, t0)
+	db.SaveDecision("h2", Decision{KeepVolume: "v", KeepRelPath: "b", Action: ""}, t0)
+	got, err := db.LoadDecisions([]string{"h1", "h2", "h3"})
+	if err != nil || len(got) != 2 || got["h1"].Action != ActionMove || got["h2"].KeepRelPath != "b" {
+		t.Fatalf("LoadDecisions = %+v %v", got, err)
+	}
+	db.DeleteDecisions([]string{"h1"})
+	if got, _ := db.LoadDecisions([]string{"h1", "h2"}); len(got) != 1 {
+		t.Errorf("after delete: %+v", got)
 	}
 }

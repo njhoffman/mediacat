@@ -46,6 +46,7 @@ type dupesFlags struct {
 	limit     int
 	workers   int
 	showFiles bool
+	review    bool
 }
 
 func (a *app) dupesCmd() *cobra.Command {
@@ -74,11 +75,16 @@ stopped. Files changed since the last scan are skipped.
 
 One copy per group is kept, chosen by --keep rules applied in order:
 ` + ruleHelp.String() + `
+--review opens an interactive list of the groups: choose the copy to keep and trash,
+move, delete or leave each group (o opens a copy to check it). Choices are saved as you
+go; applying asks for the same confirmations as below.
+
 Actions are a dry run unless --execute is given. --trash only uses the trash on the
 files' own drive; --move-to keeps the layout below path; --delete is permanent and
 always asks you to type "delete".`,
 		Example: `  mediacat dupes                                  # report duplicates here
   mediacat dupes /mnt/nfs/Stash --prefer /mnt/nfs/Stash/Sorted --trash
+  mediacat dupes /mnt/nfs/Stash --review
   mediacat dupes --trash --execute
   mediacat dupes --move-to /mnt/nfs/trashbox --execute --yes
   mediacat dupes --export dupes.csv`,
@@ -111,6 +117,7 @@ always asks you to type "delete".`,
 	f.IntVarP(&df.limit, "limit", "n", d.Limit, "groups to show (0 for all)")
 	f.IntVarP(&df.workers, "workers", "j", d.Workers, "parallel hashing (0: 2 network, 1 spinning disk, 4 otherwise)")
 	f.BoolVar(&df.showFiles, "dry-run-files", false, "list every file the action would touch")
+	f.BoolVarP(&df.review, "review", "r", false, "choose the copy to keep and the action per group interactively")
 	return cmd
 }
 
@@ -164,6 +171,16 @@ func (a *app) runDupes(dir string, df dupesFlags) error {
 	}
 	if df.asJSON && kind != "" {
 		return errors.New("--json reports only; drop it to run an action")
+	}
+	if df.review {
+		switch {
+		case depth != dupes.DepthFull:
+			return errors.New("--review needs --depth full")
+		case df.asJSON || df.execute:
+			return errors.New("--review cannot be combined with --json or --execute; it asks for confirmation before applying")
+		case a.interactive == nil || !a.interactive():
+			return errors.New("--review needs an interactive terminal")
+		}
 	}
 	minSize, err := filter.ParseSize(df.minSize)
 	if err != nil {
@@ -256,6 +273,12 @@ func (a *app) runDupes(dir string, df dupesFlags) error {
 			return err
 		}
 	}
+	if df.review {
+		if root == "" {
+			root = "/"
+		}
+		return a.runReview(ctx, kind, root, df, res, vols)
+	}
 	if df.asJSON {
 		return writeGroupsJSON(a.stdout, res.Groups)
 	}
@@ -281,7 +304,8 @@ func (a *app) runDupes(dir string, df dupesFlags) error {
 	if root == "" {
 		root = "/"
 	}
-	return a.act(ctx, kind, root, df, res.Groups, vols)
+	_, err = a.act(ctx, kind, root, df, res.Groups, vols)
+	return err
 }
 
 func (a *app) printDupes(res *dupes.Result, where string, limit int) {
@@ -358,28 +382,29 @@ func (a *app) printDupes(res *dupes.Result, where string, limit int) {
 	}
 }
 
-// act builds the plan, shows exactly what will happen, asks, and runs it.
-func (a *app) act(ctx context.Context, kind, root string, df dupesFlags, groups []dupes.Group, vols map[string]volume.Volume) error {
+// act builds the plan, shows exactly what will happen, asks, and runs it. applied reports
+// whether anything was executed (false for dry runs and declined prompts).
+func (a *app) act(ctx context.Context, kind, root string, df dupesFlags, groups []dupes.Group, vols map[string]volume.Volume) (applied bool, err error) {
 	moveTo := ""
 	if kind == catalog.ActionMove {
 		abs, err := filepath.Abs(df.moveTo)
 		if err != nil {
-			return err
+			return false, err
 		}
 		moveTo = abs
 	}
 	plan, err := actions.BuildPlan(kind, root, moveTo, groups, vols)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if len(plan.Ops) == 0 {
 		fmt.Fprintln(a.stdout, "\nNothing to do.")
-		return nil
+		return false, nil
 	}
 	trasher := actions.NewTrasher(a.res)
 	level, lines, err := a.describePlan(plan, trasher)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !df.execute {
 		lines[0] = "DRY RUN: " + strings.Replace(lines[0], " will be ", " would be ", 1)
@@ -390,27 +415,27 @@ func (a *app) act(ctx context.Context, kind, root string, df dupesFlags, groups 
 			}
 		}
 		fmt.Fprintf(a.stdout, "%s\n", ui.Dim.Render("Nothing was changed. Add --execute to apply."))
-		return nil
+		return false, nil
 	}
 	fmt.Fprintf(a.stderr, "\n%s\n", ui.Banner(level, lines...))
 	switch {
 	case kind == catalog.ActionDelete:
 		ok, err := a.confirm(ui.Err.Render(`Type "delete" to permanently delete these files: `), "delete")
 		if err != nil {
-			return fmt.Errorf("permanent deletion must be confirmed in a terminal: %w", err)
+			return false, fmt.Errorf("permanent deletion must be confirmed in a terminal: %w", err)
 		}
 		if !ok {
 			fmt.Fprintln(a.stderr, "Cancelled; nothing was deleted.")
-			return nil
+			return false, nil
 		}
 	case !df.yes:
 		ok, err := a.confirm("Proceed? [y/N] ", "")
 		if err != nil {
-			return fmt.Errorf("%w (or pass --yes)", err)
+			return false, fmt.Errorf("%w (or pass --yes)", err)
 		}
 		if !ok {
 			fmt.Fprintln(a.stderr, "Cancelled; nothing was changed.")
-			return nil
+			return false, nil
 		}
 	}
 
@@ -433,12 +458,12 @@ func (a *app) act(ctx context.Context, kind, root string, df dupesFlags, groups 
 		a.printOutcome(kind, plan, out)
 	}
 	if err != nil {
-		return err
+		return out != nil && out.Done > 0, err
 	}
 	if out.Interrupted {
-		return errInterrupted{}
+		return out.Done > 0, errInterrupted{}
 	}
-	return nil
+	return true, nil
 }
 
 var actionVerb = map[string]string{

@@ -113,6 +113,16 @@ var migrations = []string{
 
 	`ALTER TABLE files ADD COLUMN video_bitrate INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE files ADD COLUMN audio_bitrate INTEGER NOT NULL DEFAULT 0;`,
+
+	// Choices made in the interactive review, keyed by group content hash so they survive
+	// re-runs and rescans as long as the group's content is unchanged.
+	`CREATE TABLE review_decisions (
+		group_key    TEXT PRIMARY KEY,
+		keep_volume  TEXT NOT NULL,
+		keep_relpath TEXT NOT NULL,
+		action       TEXT NOT NULL,
+		updated_at   INTEGER NOT NULL
+	);`,
 }
 
 // bitrateMigration is the schema version that added per-stream bitrates; rows probed
@@ -1012,4 +1022,61 @@ func (c *DB) TrashedEntries(volumeKey string) ([]Action, error) {
 func (c *DB) MarkActionPurged(id int64) error {
 	_, err := c.db.Exec(`UPDATE actions SET status = 'purged' WHERE id = ?`, id)
 	return err
+}
+
+// Decision is a saved review choice for one duplicate group.
+type Decision struct {
+	KeepVolume  string
+	KeepRelPath string
+	Action      string // an Action* kind, or "" to leave the group alone
+}
+
+// LoadDecisions returns saved decisions for the given group keys.
+func (c *DB) LoadDecisions(keys []string) (map[string]Decision, error) {
+	out := map[string]Decision{}
+	for start := 0; start < len(keys); start += 500 {
+		chunk := keys[start:min(start+500, len(keys))]
+		args := make([]any, len(chunk))
+		for i, k := range chunk {
+			args[i] = k
+		}
+		rows, err := c.db.Query(`SELECT group_key, keep_volume, keep_relpath, action FROM review_decisions
+			WHERE group_key IN (`+placeholders(len(chunk))+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var k string
+			var d Decision
+			if err := rows.Scan(&k, &d.KeepVolume, &d.KeepRelPath, &d.Action); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[k] = d
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// SaveDecision stores the choice for one group.
+func (c *DB) SaveDecision(key string, d Decision, now time.Time) error {
+	_, err := c.db.Exec(`INSERT INTO review_decisions (group_key, keep_volume, keep_relpath, action, updated_at)
+		VALUES (?, ?, ?, ?, ?) ON CONFLICT (group_key) DO UPDATE SET keep_volume = excluded.keep_volume,
+		keep_relpath = excluded.keep_relpath, action = excluded.action, updated_at = excluded.updated_at`,
+		key, d.KeepVolume, d.KeepRelPath, d.Action, now.Unix())
+	return err
+}
+
+// DeleteDecisions forgets saved choices, e.g. once they have been applied.
+func (c *DB) DeleteDecisions(keys []string) error {
+	for _, k := range keys {
+		if _, err := c.db.Exec(`DELETE FROM review_decisions WHERE group_key = ?`, k); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -170,3 +170,10 @@ func TestResolveColumns(t *testing.T) {
 		t.Error("removing every column should fail")
 	}
 }
+
+func writeConfig(t *testing.T, h *harness, body string) {
+	t.Helper()
+	if err := os.WriteFile(h.config, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

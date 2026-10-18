@@ -4,7 +4,7 @@ Interactive audio/image/video cataloger and duplicate manager. Scans any directo
 recursively, keeps a persistent catalog of file and media metadata, finds duplicates at
 selectable depths, and trashes, deletes, or moves them safely.
 
-Status: phases 1-2 implemented and committed. Phases 3-5 not started.
+Status: phases 1-3 implemented and committed. Phases 4-5 not started.
 
 ## Goals
 
@@ -218,8 +218,20 @@ Measured on the share: full hashing ran at ~37 MB/s with 2 workers (6 large cand
 
 ## Phase 3: interactive duplicate review
 
-- Bubbletea TUI over duplicate groups: side-by-side metadata, keep-policy preselection,
-  per-file override, per-group action, summary and confirmation before applying.
+- `mediacat dupes [path] --review` (`just review [path]`): full-screen list of every
+  confirmed group. Each copy shows date, resolution, duration, video codec and bitrate.
+- Keys: j/k move, ]/[ jump groups, space keeps the copy under the cursor, t/m/d set the
+  group to trash/move/delete the other copies, s leaves it, T/M/D/S do the same for every
+  group, o opens the copy with xdg-open, a applies, q quits, ? shows help.
+- The initial keeper comes from the keep policy; the initial action from --trash/--delete/
+  --move-to if given, otherwise "leave".
+- Choices are saved on every change in `review_decisions`, keyed by the group's content
+  hash, so quitting and re-running resumes them (as long as the group is unchanged).
+  Applied groups' choices are cleared.
+- Apply runs one batch per action kind (trash, then move, then delete) through the normal
+  confirmation: y/N for trash and move, typed `delete` for delete. Move uses --move-to or
+  `dupes.move_to` from the config; without either, move is unavailable in the review.
+- Multi-key bursts (fast typing) are split into individual keys.
 
 ## Phase 4: integrity check
 

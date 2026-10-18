@@ -90,6 +90,10 @@ info FILE *ARGS: build
 dupes *ARGS: build
     {{bin}} {{dbflag}} dupes "$@"
 
+# Review duplicates interactively: pick the copy to keep and trash/move/delete per group
+review *ARGS: build
+    {{bin}} {{dbflag}} dupes "$@" --review
+
 # Show the trash on a path's drive; --empty to purge what mediacat put there
 trash *ARGS: build
     {{bin}} {{dbflag}} trash "$@"
