@@ -15,6 +15,8 @@ import (
 	"math/bits"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -46,6 +48,7 @@ const (
 // Hasher runs ffmpeg to extract frames.
 type Hasher struct {
 	FFmpeg  string        // default "ffmpeg"
+	FFprobe string        // default "ffprobe"; reads the video stream's duration for retries
 	Timeout time.Duration // per ffmpeg run; default 2 minutes
 	MinSize int           // images narrower or shorter than this are ErrTooSmall
 }
@@ -60,13 +63,37 @@ func (h Hasher) bin() string {
 // Distance is the number of differing bits between two hashes.
 func Distance(a, b uint64) int { return bits.OnesCount64(a ^ b) }
 
-// Video hashes a video of the given duration in seconds.
+// Video hashes a video of the given duration in seconds (the container's, as Stash uses).
+// When the video stream is shorter (audio that runs past the picture) and the last sample
+// frames would fall after the picture ends, it uses the stream's duration instead: no
+// frame decodes there, so neither Stash nor mediacat could hash the file otherwise. Every
+// other file gets exactly Stash's hash.
 func (h Hasher) Video(ctx context.Context, path string, duration float64) (uint64, error) {
 	if duration <= 0 {
 		return 0, errors.New("unknown duration")
 	}
-	// Stash rounds durations to hundredths before choosing frame times.
-	duration = math.Round(duration*100) / 100
+	return h.video(ctx, path, h.hashDuration(ctx, path, duration))
+}
+
+// hashDuration picks the duration to sample frames from. A failed probe keeps the
+// container duration; frame extraction then reports the real error.
+func (h Hasher) hashDuration(ctx context.Context, path string, container float64) float64 {
+	stream, err := h.streamDuration(ctx, path)
+	if err != nil || stream <= 0 || round2(stream) >= round2(container) {
+		return container
+	}
+	d := round2(container)
+	if last := 0.05*d + float64(columns*rows-1)*(0.9*d/float64(columns*rows)); last < stream {
+		return container
+	}
+	return stream
+}
+
+// round2 rounds seconds to hundredths, as Stash does before choosing frame times.
+func round2(s float64) float64 { return math.Round(s*100) / 100 }
+
+func (h Hasher) video(ctx context.Context, path string, duration float64) (uint64, error) {
+	duration = round2(duration)
 	n := columns * rows
 	offset, step := 0.05*duration, 0.9*duration/float64(n)
 	frames := make([]image.Image, 0, n)
@@ -85,6 +112,50 @@ func (h Hasher) Video(ctx context.Context, path string, duration float64) (uint6
 		frames = append(frames, img)
 	}
 	return hashImage(montage(frames))
+}
+
+// streamDuration reads the first video stream's duration in seconds, from the stream or,
+// for Matroska, its DURATION tag. It returns 0 when neither is set.
+func (h Hasher) streamDuration(ctx context.Context, path string) (float64, error) {
+	bin := h.FFprobe
+	if bin == "" {
+		bin = "ffprobe"
+	}
+	out, err := h.exec(ctx, bin, "-v", "error", "-select_streams", "v:0",
+		"-show_entries", "stream=duration:stream_tags=DURATION", "-of", "default=noprint_wrappers=1", path)
+	if err != nil {
+		return 0, err
+	}
+	var tag float64
+	for _, line := range strings.Split(string(out), "\n") {
+		k, v, _ := strings.Cut(strings.TrimSpace(line), "=")
+		switch k {
+		case "duration":
+			if d, err := strconv.ParseFloat(v, 64); err == nil && d > 0 {
+				return d, nil
+			}
+		case "TAG:DURATION":
+			tag = parseClock(v)
+		}
+	}
+	return tag, nil
+}
+
+// parseClock parses "HH:MM:SS.fraction" into seconds, or returns 0.
+func parseClock(s string) float64 {
+	parts := strings.Split(s, ":")
+	if len(parts) != 3 {
+		return 0
+	}
+	var total float64
+	for _, p := range parts {
+		f, err := strconv.ParseFloat(p, 64)
+		if err != nil {
+			return 0
+		}
+		total = total*60 + f
+	}
+	return total
 }
 
 func montage(frames []image.Image) image.Image {
@@ -134,13 +205,17 @@ var transientText = []string{"Input/output error", "Resource temporarily unavail
 	"Host is down", "Stale file handle", "Transport endpoint is not connected", "Connection reset"}
 
 func (h Hasher) run(ctx context.Context, args ...string) ([]byte, error) {
+	return h.exec(ctx, h.bin(), args...)
+}
+
+func (h Hasher) exec(ctx context.Context, bin string, args ...string) ([]byte, error) {
 	timeout := h.Timeout
 	if timeout == 0 {
 		timeout = 2 * time.Minute
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, h.bin(), args...)
+	cmd := exec.CommandContext(cctx, bin, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
@@ -148,7 +223,7 @@ func (h Hasher) run(ctx context.Context, args ...string) ([]byte, error) {
 	case ctx.Err() != nil:
 		return nil, ctx.Err()
 	case cctx.Err() != nil:
-		return nil, fmt.Errorf("%w: ffmpeg timed out", ErrTransient)
+		return nil, fmt.Errorf("%w: %s timed out", ErrTransient, filepath.Base(bin))
 	}
 	msg := strings.TrimSpace(stderr.String())
 	for _, t := range transientText {
@@ -159,7 +234,7 @@ func (h Hasher) run(ctx context.Context, args ...string) ([]byte, error) {
 	if err != nil {
 		var ee *exec.ExitError
 		if !errors.As(err, &ee) {
-			return nil, fmt.Errorf("running ffmpeg: %w", err)
+			return nil, fmt.Errorf("running %s: %w", filepath.Base(bin), err)
 		}
 		if msg == "" {
 			msg = err.Error()

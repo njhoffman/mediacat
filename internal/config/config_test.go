@@ -18,7 +18,8 @@ func TestTemplateIsDefault(t *testing.T) {
 	}
 	h := c.Highlights
 	if h.Size.Warn != 1<<30 || h.Size.Max != 4<<30 || h.Duration.Warn != 3_600_000 || h.Duration.Max != 10_800_000 ||
-		h.Resolution.Warn != 1920*1080 || h.Resolution.Max != 3840*2160 || h.VBitrate.Warn != 10e6 || h.VBitrate.Max != 50e6 {
+		h.Resolution.Warn != 1920*1080 || h.Resolution.Max != 3840*2160 || h.VBitrate.Warn != 10e6 || h.VBitrate.Max != 50e6 ||
+		h.BPP.Warn != 0.15 || h.BPP.Max != 0.4 || !strings.Contains(c.List.Columns, "bpp") {
 		t.Errorf("highlights: %+v", h)
 	}
 	if !strings.HasSuffix(c.Catalog, ".local/share/mediacat/catalog.db") || strings.HasPrefix(c.Catalog, "~") {
@@ -48,6 +49,8 @@ func TestLoadErrors(t *testing.T) {
 		"list:\n  sort: loudness\n",
 		"list:\n  highlight:\n    duration:\n      warn: 2h\n      max: 30m\n",
 		"list:\n  highlight:\n    resolution:\n      warn: big\n",
+		"list:\n  highlight:\n    bpp:\n      warn: lots\n      max: 0.4\n",
+		"list:\n  highlight:\n    bpp:\n      warn: -1\n      max: 0.4\n",
 		"scan:\n  probe_timeout: soon\n",
 		"list:\n  columns: size,loudness\n",
 	} {

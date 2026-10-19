@@ -72,6 +72,16 @@ type Result struct {
 	Raw          []byte // ffprobe JSON, nil when the file was read without ffprobe
 }
 
+// BPP is the video bitrate per pixel per frame, a measure of how heavily a video is
+// encoded that does not depend on its resolution or frame rate. It is 0 when any input is
+// unknown.
+func (r Result) BPP() float64 {
+	if r.VideoBitrate <= 0 || r.Width <= 0 || r.Height <= 0 || r.FPS <= 0 {
+		return 0
+	}
+	return float64(r.VideoBitrate) / (float64(r.Width) * float64(r.Height) * r.FPS)
+}
+
 // ErrTransient marks failures that say nothing about the file itself (network errors,
 // timeouts). Callers should retry later rather than record the file as broken.
 var ErrTransient = errors.New("transient error")
@@ -242,10 +252,14 @@ func FromJSON(raw []byte, kind string) (Result, error) {
 	return r, nil
 }
 
+// MPEGVariableBitrate is the bit_rate ffprobe reports for MPEG-1/2 video streams whose
+// header declares a variable rate (0x3FFFF x 400 bit/s): a marker, not a measurement.
+const MPEGVariableBitrate = 104857200
+
 // streamBitrate reads a stream's average bit rate, falling back to the BPS statistics tag
 // mkvmerge writes ("BPS" or "BPS-eng").
 func streamBitrate(s ffStream) int64 {
-	if n, err := strconv.ParseInt(s.BitRate, 10, 64); err == nil && n > 0 {
+	if n, err := strconv.ParseInt(s.BitRate, 10, 64); err == nil && n > 0 && n != MPEGVariableBitrate {
 		return n
 	}
 	for k, v := range s.Tags {

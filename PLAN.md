@@ -210,7 +210,11 @@ Measured on the share: full hashing ran at ~37 MB/s with 2 workers (6 large cand
 - Size, duration and resolution cells shade pale yellow to red (never bold) between
   `list.highlight.*.warn` and `.max` (defaults 1G-4G, 1h-3h, 1920x1080-3840x2160 by
   pixel count; raised from 500M and 30m-2h on 2026-10-18 after those tinted 20-26% of
-  the real library).
+  the real library). bpp (video bits per pixel per frame, vbitrate / (w x h x fps)) is a
+  field, column (default, after vbitrate), `--min-bpp`/`--max-bpp` filter, and highlight
+  (0.15-0.4): it flags heavy encodes at any resolution, which absolute vbitrate cannot.
+- ffprobe's MPEG-1/2 variable-bitrate marker (bit_rate 104857200) is treated as unknown;
+  migration 7 re-derives rows holding it from their stored ffprobe JSON.
 - Dupes keep rule `paths` with `dupes.preferred_paths` (default `/sorted`, `^incoming`):
   case-insensitive substrings, "^" avoids; an avoided match outweighs a preferred one.
 - Per-stream video and audio bitrates are recorded (stream `bit_rate`, else mkvmerge `BPS`
@@ -306,10 +310,22 @@ Measured on the share: full hashing ran at ~37 MB/s with 2 workers (6 large cand
   mtimes, so a choice applies only to an unchanged group.
 - `list`/`info`: `phash` field (Stash's hex form) and the source; `info` also shows the
   integrity check result.
+- Duration for frame sampling: the container's, as Stash uses (`FileDuration`). When the
+  video stream is shorter (audio runs past the picture) and the last sample frame would
+  land after the picture, the stream's duration is used instead (one ffprobe per video);
+  such files cannot be hashed with the container duration by Stash or mediacat, so no
+  hash that Stash could produce changes.
 - Measured: Stash/Sorted/JAV/BOBB (177 files) used 177 Stash phashes, 0 computed, no
   groups. Stash/Enhanced (578 files, many 4K-8K upscales, none in Stash's DB) computed 567
   phashes in 3h23m wall, 17.9h CPU (~113 CPU-s per file; high-res decode dominates), found
   49 groups / 15.4 GiB reclaimable at high. Reruns use the cached phashes.
+
+## Versioning
+
+- Semver tags `vX.Y.Z` (pre-1.0: minor for features or schema changes, patch for fixes).
+  v0.5.0 marks phases 1-5. `just release patch|minor|major` tags HEAD, rebuilds with
+  `git describe` stamped into `--version`, and links `~/.local/bin/mediacat` to the repo
+  binary; every `just build` refreshes that link.
 
 ## Deferred
 

@@ -97,6 +97,7 @@ func TestListColumnsAndSorting(t *testing.T) {
 		"vcodec":    {"--vcodec", "h264"},
 		"min-fps":   {"--min-fps", "24"},
 		"vbitrate":  {"--min-vbitrate", "1k"},
+		"bpp":       {"--min-bpp", "0.0001"},
 		"container": {"--container", "mp4"},
 		"modified":  {"--modified-after", "1d"},
 		"path":      {"--path-contains", "clip"},
@@ -115,7 +116,30 @@ func TestListColumnsAndSorting(t *testing.T) {
 	if hd := header(out); !strings.Contains(hd, "ARTIST") || !strings.Contains(hd, "A-BITRATE") {
 		t.Errorf("audio default columns: %q", hd)
 	}
+	// bpp: only files with a video bitrate, size and frame rate have one.
+	out, _ = h.ok("list", h.dir, "--columns", "name,bpp", "--sort", "-bpp")
+	if hd := header(out); !strings.Contains(hd, "BPP") {
+		t.Errorf("bpp column: %q", hd)
+	}
+	if lines := strings.Split(strings.TrimSpace(out), "\n"); !strings.HasPrefix(lines[1], "clip.mp4") || !strings.Contains(lines[1], "0.") ||
+		!strings.Contains(lines[len(lines)-1], "-") {
+		t.Errorf("bpp values, unknown last:\n%s", out)
+	}
+	for _, args := range [][]string{{"--min-bpp", "100"}, {"--max-bpp", "0.000001"}} {
+		if out, _ := h.ok(append([]string{"list", h.dir, "--columns", "name"}, args...)...); strings.Contains(out, ".mp") || strings.Contains(out, ".png") {
+			t.Errorf("%v should match nothing:\n%s", args, out)
+		}
+	}
+	if out, _ := h.ok("list", h.dir, "--columns", "name", "--max-bpp", "100"); strings.Contains(out, "song.mp3") || !strings.Contains(out, "clip.mp4") {
+		t.Errorf("--max-bpp should skip files without a bpp:\n%s", out)
+	}
+	if out, _ := h.ok("list", h.dir, "--name", "clip", "--json"); !strings.Contains(out, `"bpp":`) {
+		t.Errorf("json bpp:\n%s", out)
+	}
 	out, _ = h.ok("info", filepath.Join(h.dir, "clip.mp4"))
+	if !strings.Contains(out, "bits per pixel") {
+		t.Errorf("info bpp:\n%s", out)
+	}
 	if !strings.Contains(out, "video bitrate") || !strings.Contains(out, "audio bitrate") {
 		t.Errorf("info bitrates:\n%s", out)
 	}
@@ -130,15 +154,16 @@ func TestListHighlightsLargeValues(t *testing.T) {
     size: {warn: 20k, max: 21k}
     duration: {warn: "0.5", max: "0.9"}
     resolution: {warn: 100x100, max: 200x200}
+    bpp: {warn: 0.00001, max: 0.00002}
 `), 0o644)
 	h.ok("scan", h.dir)
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
 
-	out, _ := h.ok("list", h.dir, "--name", "clip", "--columns", "size,duration,res,name")
+	out, _ := h.ok("list", h.dir, "--name", "clip", "--columns", "size,duration,res,bpp,name")
 	line := strings.Split(strings.TrimSpace(out), "\n")[1]
-	if strings.Count(line, "\x1b[") < 3 || strings.Contains(line, "\x1b[1;") || strings.Contains(line, "\x1b[1m") {
-		t.Errorf("clip should have three highlighted, non-bold cells: %q", line)
+	if strings.Count(line, "\x1b[") < 4 || strings.Contains(line, "\x1b[1;") || strings.Contains(line, "\x1b[1m") {
+		t.Errorf("clip should have four highlighted, non-bold cells: %q", line)
 	}
 	out, _ = h.ok("list", h.dir, "--name", "pic", "--columns", "res,name")
 	line = strings.Split(strings.TrimSpace(out), "\n")[1]

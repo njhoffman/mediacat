@@ -140,11 +140,18 @@ var migrations = []string{
 	ALTER TABLE files ADD COLUMN phash_error TEXT NOT NULL DEFAULT '';
 	ALTER TABLE files ADD COLUMN phash_size INTEGER NOT NULL DEFAULT -1;
 	ALTER TABLE files ADD COLUMN phash_mtime_ns INTEGER NOT NULL DEFAULT 0;`,
+	// No schema change: rows holding the MPEG variable-bitrate marker as their video
+	// bitrate are re-derived from their stored ffprobe JSON (see vbrMigration).
+	`SELECT 1;`,
 }
 
 // bitrateMigration is the schema version that added per-stream bitrates; rows probed
 // before it are backfilled from their stored ffprobe JSON.
 const bitrateMigration = 3
+
+// vbrMigration is the schema version after which ffprobe's MPEG variable-bitrate marker
+// is no longer stored as a video bitrate; rows that hold it are re-derived.
+const vbrMigration = 7
 
 // DB wraps the catalog database.
 type DB struct {
@@ -213,15 +220,19 @@ func (c *DB) migrateTo(target int) error {
 		}
 	}
 	if v < bitrateMigration && target >= bitrateMigration {
-		return c.backfillBitrates()
+		return c.backfillBitrates("")
+	}
+	if v < vbrMigration && target >= vbrMigration {
+		return c.backfillBitrates(fmt.Sprintf(" AND video_bitrate = %d", probe.MPEGVariableBitrate))
 	}
 	return nil
 }
 
-// backfillBitrates derives stream bitrates for already-probed files from the ffprobe
-// output stored with them, so upgrading does not require re-probing the library.
-func (c *DB) backfillBitrates() error {
-	rows, err := c.db.Query(`SELECT id, kind, probe_json FROM files WHERE probe_json IS NOT NULL AND length(probe_json) > 0`)
+// backfillBitrates derives stream bitrates for already-probed files (optionally narrowed by
+// an extra WHERE condition) from the ffprobe output stored with them, so upgrading does not
+// require re-probing the library.
+func (c *DB) backfillBitrates(where string) error {
+	rows, err := c.db.Query(`SELECT id, kind, probe_json FROM files WHERE probe_json IS NOT NULL AND length(probe_json) > 0` + where)
 	if err != nil {
 		return err
 	}
@@ -235,7 +246,7 @@ func (c *DB) backfillBitrates() error {
 			rows.Close()
 			return err
 		}
-		if r, err := probe.FromJSON(raw, kind); err == nil && (r.VideoBitrate > 0 || r.AudioBitrate > 0) {
+		if r, err := probe.FromJSON(raw, kind); err == nil {
 			updates = append(updates, upd{id, r.VideoBitrate, r.AudioBitrate})
 		}
 	}
@@ -708,6 +719,9 @@ func (c *DB) Query(volumeID int64, prefix string, flt filter.Filter) ([]File, er
 	rng("f.video_bitrate", flt.MinVBitrate, flt.MaxVBitrate, flt.MinVBitrate > 0, flt.MaxVBitrate > 0)
 	rng("f.audio_bitrate", flt.MinABitrate, flt.MaxABitrate, flt.MinABitrate > 0, flt.MaxABitrate > 0)
 	rng("f.fps", flt.MinFPS, flt.MaxFPS, flt.MinFPS > 0, flt.MaxFPS > 0)
+	// Division by zero is NULL in SQLite, so files missing an input never match.
+	rng("(CASE WHEN f.video_bitrate > 0 THEN f.video_bitrate * 1.0 / (f.width * f.height * f.fps) END)",
+		flt.MinBPP, flt.MaxBPP, flt.MinBPP > 0, flt.MaxBPP > 0)
 	rng("f.tag_year", flt.MinYear, flt.MaxYear, flt.MinYear > 0, flt.MaxYear > 0)
 	if len(flt.Codecs) > 0 {
 		ph := placeholders(len(flt.Codecs))

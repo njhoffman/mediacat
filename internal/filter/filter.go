@@ -35,6 +35,8 @@ type Filter struct {
 	MaxABitrate    int64
 	MinFPS         float64
 	MaxFPS         float64
+	MinBPP         float64 // video bits per pixel per frame
+	MaxBPP         float64
 	MinYear        int
 	MaxYear        int
 	Codecs         []string // matches video or audio codec
@@ -73,6 +75,7 @@ const (
 	FieldFPS        = "fps"
 	FieldBitrate    = "bitrate"
 	FieldVBitrate   = "vbitrate"
+	FieldBPP        = "bpp"
 	FieldABitrate   = "abitrate"
 	FieldCodec      = "codec"
 	FieldVCodec     = "vcodec"
@@ -97,7 +100,7 @@ const (
 // Fields lists every field, in the order help text shows them.
 var Fields = []string{
 	FieldPath, FieldName, FieldDir, FieldExt, FieldType, FieldSize, FieldDuration, FieldRes, FieldWidth,
-	FieldHeight, FieldFPS, FieldBitrate, FieldVBitrate, FieldABitrate, FieldCodec, FieldVCodec, FieldACodec,
+	FieldHeight, FieldFPS, FieldBitrate, FieldVBitrate, FieldBPP, FieldABitrate, FieldCodec, FieldVCodec, FieldACodec,
 	FieldContainer, FieldChannels, FieldSampleRate, FieldMtime, FieldScanned, FieldArtist, FieldAlbum,
 	FieldTitle, FieldTrack, FieldYear, FieldGenre, FieldError, FieldCheck, FieldDup,
 	FieldPHash,
@@ -132,6 +135,7 @@ func (f Filter) Validate() error {
 		{"video bitrate", float64(f.MinVBitrate), float64(f.MaxVBitrate)},
 		{"audio bitrate", float64(f.MinABitrate), float64(f.MaxABitrate)},
 		{"fps", f.MinFPS, f.MaxFPS},
+		{"bpp", f.MinBPP, f.MaxBPP},
 		{"year", float64(f.MinYear), float64(f.MaxYear)},
 	}
 	for _, r := range ranges {

@@ -42,6 +42,8 @@ func Value(f File, field string) (num float64, str string, numeric, known bool) 
 		return n(float64(m.Bitrate))
 	case filter.FieldVBitrate:
 		return n(float64(m.VideoBitrate))
+	case filter.FieldBPP:
+		return n(m.BPP())
 	case filter.FieldABitrate:
 		return n(float64(m.AudioBitrate))
 	case filter.FieldCodec:

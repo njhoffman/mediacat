@@ -434,3 +434,43 @@ func TestCopiesCount(t *testing.T) {
 		t.Errorf("--duplicates = %v", paths(dups))
 	}
 }
+
+func TestMPEGVariableBitrateRederivedOnUpgrade(t *testing.T) {
+	// A version-6 catalog holding ffprobe's MPEG VBR marker as a video bitrate.
+	path := filepath.Join(t.TempDir(), "c.db")
+	sqldb, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := &DB{db: sqldb, Path: path}
+	if err := old.migrateTo(6); err != nil {
+		t.Fatal(err)
+	}
+	mpeg := `{"format":{"format_name":"mpeg","duration":"394","bit_rate":"865676"},
+		"streams":[{"codec_type":"video","codec_name":"mpeg1video","bit_rate":"104857200"},{"codec_type":"audio","codec_name":"mp2","bit_rate":"160000"}]}`
+	h264 := `{"format":{"format_name":"mov,mp4","duration":"10","bit_rate":"5000000"},
+		"streams":[{"codec_type":"video","codec_name":"h264","bit_rate":"4800000"}]}`
+	for _, q := range []string{
+		`INSERT INTO volumes (id, key, source, fstype, last_mount_path, last_seen_at) VALUES (1, 'k', 's', 'ext4', '/x', 0)`,
+		`INSERT INTO files (volume_id, relpath, ext, size, mtime_ns, kind, scanned_at, probe_json, video_bitrate, audio_bitrate) VALUES (1, 'a.mpg', 'mpg', 1, 1, 'video', 0, '` + mpeg + `', 104857200, 160000)`,
+		// Untouched: not the marker, and its stored value deliberately differs from its JSON.
+		`INSERT INTO files (volume_id, relpath, ext, size, mtime_ns, kind, scanned_at, probe_json, video_bitrate, audio_bitrate) VALUES (1, 'b.mp4', 'mp4', 1, 1, 'video', 0, '` + h264 + `', 123, 0)`,
+	} {
+		if _, err := sqldb.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sqldb.Close()
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if f, _ := db.GetFile(1, "a.mpg"); f == nil || f.Meta.VideoBitrate != 705_676 || f.Meta.AudioBitrate != 160_000 {
+		t.Errorf("marker row: %+v", f)
+	}
+	if f, _ := db.GetFile(1, "b.mp4"); f == nil || f.Meta.VideoBitrate != 123 {
+		t.Errorf("other rows must not be rewritten: %+v", f)
+	}
+}

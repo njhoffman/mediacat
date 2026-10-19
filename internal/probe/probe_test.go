@@ -106,6 +106,18 @@ func TestTransientStderr(t *testing.T) {
 	}
 }
 
+func TestBPP(t *testing.T) {
+	r := Result{VideoBitrate: 4_147_200, Width: 1920, Height: 1080, FPS: 25}
+	if got := r.BPP(); got < 0.07999 || got > 0.08001 {
+		t.Errorf("BPP = %f, want 0.08", got)
+	}
+	for _, missing := range []Result{{Width: 1920, Height: 1080, FPS: 25}, {VideoBitrate: 1, Height: 1, FPS: 1}, {VideoBitrate: 1, Width: 1, Height: 1}} {
+		if missing.BPP() != 0 {
+			t.Errorf("%+v: BPP should be 0 when an input is unknown", missing)
+		}
+	}
+}
+
 func TestHelpers(t *testing.T) {
 	if r := parseRate("30000/1001"); r < 29.96 || r > 29.98 {
 		t.Errorf("parseRate = %f", r)
@@ -147,6 +159,8 @@ func TestFromJSONBitrates(t *testing.T) {
 		{"derived video", doc("5000000", stream("video", "h264", "", ""), stream("audio", "aac", "", `"BPS":"200000"`)), filter.KindVideo, 4800000, 200000},
 		{"unknown audio blocks derivation", doc("5000000", stream("video", "h264", "", ""), stream("audio", "aac", "", "")), filter.KindVideo, 0, 0},
 		{"audio only", doc("320000", stream("audio", "flac", "", "")), filter.KindAudio, 0, 320000},
+		{"mpeg VBR marker is derived instead", doc("865676", stream("video", "mpeg1video", "104857200", ""), stream("audio", "mp2", "160000", "")), filter.KindVideo, 705676, 160000},
+		{"mpeg VBR marker, unknown audio", doc("865676", stream("video", "mpeg2video", "104857200", ""), stream("audio", "mp2", "", "")), filter.KindVideo, 0, 0},
 	}
 	for _, c := range cases {
 		r, err := FromJSON(c.raw, c.kind)

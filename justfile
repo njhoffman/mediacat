@@ -3,6 +3,12 @@ set positional-arguments
 
 bin := "./mediacat"
 
+# Version stamped into the binary: the latest tag, plus commits since and -dirty for dev builds.
+version := `git describe --tags --always --dirty 2>/dev/null || echo dev`
+
+# The installed command is a symlink to the repo's binary, so every build updates it.
+link := env_var("HOME") / ".local/bin/mediacat"
+
 # Catalog to use; empty means mediacat's default (~/.local/share/mediacat/catalog.db).
 # Override per run: just db=/tmp/mc-test.db scan /mnt/nfs/Stash
 db := ""
@@ -15,13 +21,41 @@ default:
 
 # --- development ---
 
-# Build ./mediacat
+# Build ./mediacat with the git version and link it as ~/.local/bin/mediacat
 build:
-    go build -o {{bin}} ./cmd/mediacat
+    go build -ldflags "-X main.version={{version}}" -o {{bin}} ./cmd/mediacat
+    @mkdir -p "$(dirname {{link}})"
+    @ln -sfn "{{justfile_directory()}}/mediacat" "{{link}}"
+    @echo "mediacat {{version}} -> {{link}}"
 
-# Install to ~/go/bin/mediacat
-install:
-    go install ./cmd/mediacat
+# Same as build: the installed command is the symlink build maintains
+install: build
+
+# Print the version the next build will carry
+version:
+    @echo {{version}}
+
+# Tag a release (patch, minor or major bump of the latest vX.Y.Z tag), then rebuild and relink.
+# Needs a clean tree and an untagged HEAD; push tags yourself with: git push --tags
+release LEVEL:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{LEVEL}}" in patch|minor|major) ;; *) echo "usage: just release patch|minor|major" >&2; exit 1;; esac
+    if [[ -n "$(git status --porcelain)" ]]; then echo "working tree is not clean; commit first" >&2; exit 1; fi
+    if git describe --tags --exact-match HEAD >/dev/null 2>&1; then
+        echo "HEAD is already tagged $(git describe --tags --exact-match HEAD)" >&2; exit 1
+    fi
+    last=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+    IFS=. read -r major minor patch <<< "${last#v}"
+    major=${major:-0} minor=${minor:-0} patch=${patch:-0}
+    case "{{LEVEL}}" in
+        major) next="v$((major + 1)).0.0" ;;
+        minor) next="v${major}.$((minor + 1)).0" ;;
+        patch) next="v${major}.${minor}.$((patch + 1))" ;;
+    esac
+    git tag -a "$next" -m "mediacat $next"
+    echo "tagged $next (was ${last:-none})"
+    just build
 
 # Run from source without building, e.g. just run dupes --help
 run *ARGS:

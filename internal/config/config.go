@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -98,14 +99,14 @@ dupes:
 
 list:
   # Fields for sort and columns: path name dir ext type size duration res width height fps
-  # bitrate vbitrate abitrate codec vcodec acodec container channels samplerate mtime
+  # bitrate vbitrate bpp abitrate codec vcodec acodec container channels samplerate mtime
   # scanned artist album title track year genre error check dup phash
   #
   # Default sort: comma-separated fields, "-" prefix for descending, e.g. -size,duration
   sort: path
   # Columns shown by default, and for --type audio. "dup" marks files with a known identical
   # copy (found by mediacat dupes).
-  columns: dup,size,duration,res,codec,vbitrate,path
+  columns: dup,size,duration,res,codec,vbitrate,bpp,path
   audio_columns: dup,size,duration,acodec,abitrate,artist,title,path
   # Values above "warn" are tinted pale yellow, shading to red at "max" and beyond (with a
   # finer gradient on 24-bit color terminals).
@@ -125,6 +126,11 @@ list:
     vbitrate:
       warn: 10M
       max: 50M
+    # Video bits per pixel per frame: how heavily a video is encoded at any resolution.
+    # Typical H.264 encodes are 0.05-0.1, so 0.15 is generous and 0.4 is bloated.
+    bpp:
+      warn: 0.15
+      max: 0.4
 `
 
 // Range is a highlight threshold pair as written in the file.
@@ -173,6 +179,7 @@ type Config struct {
 			Duration   Range `yaml:"duration"`
 			Resolution Range `yaml:"resolution"`
 			VBitrate   Range `yaml:"vbitrate"`
+			BPP        Range `yaml:"bpp"`
 		} `yaml:"highlight"`
 	} `yaml:"list"`
 
@@ -206,6 +213,7 @@ type Highlights struct {
 	Duration   Scale // milliseconds
 	Resolution Scale // width * height
 	VBitrate   Scale // bits/s
+	BPP        Scale // video bits per pixel per frame
 }
 
 // DefaultPath is $XDG_CONFIG_HOME/mediacat.yaml (~/.config/mediacat.yaml).
@@ -234,6 +242,7 @@ var previousTemplates = map[string]bool{
 	"c5f5aad43b613cc32fd10741a45944ad4ac87265eff377e6e55d05eeb5a151ac": true,
 	"82a6812b1af27d67afc60b5eedfaa85c59fd05a7baa6e0c295a524ba1772817f": true,
 	"619f4449a73fbc916ace72615830b6c9cfc0e5ece35f4820080542f9e9ea4af5": true,
+	"c539fe87dffa52429da781eba1a4053ee19cd183178403521a204085dd52f47e": true,
 }
 
 // Status reports what Load did to the file.
@@ -349,6 +358,15 @@ func (c *Config) finish() error {
 	if c.Highlights.VBitrate, err = scale("vbitrate", h.VBitrate, func(s string) (float64, error) {
 		n, err := filter.ParseBitrate(s)
 		return float64(n), err
+	}); err != nil {
+		return err
+	}
+	if c.Highlights.BPP, err = scale("bpp", h.BPP, func(s string) (float64, error) {
+		n, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+		if err != nil || n <= 0 {
+			return 0, fmt.Errorf("want a positive number like 0.15, got %q", s)
+		}
+		return n, nil
 	}); err != nil {
 		return err
 	}

@@ -114,6 +114,9 @@ func (a *app) printInfo(f catalog.File, live bool) {
 	}
 	if m.VideoCodec != "" {
 		rows = append(rows, kv{"video codec", m.VideoCodec}, kv{"video bitrate", ui.Bitrate(m.VideoBitrate)})
+		if bpp := m.BPP(); bpp > 0 {
+			rows = append(rows, kv{"bits per pixel", fmt.Sprintf("%.3f per pixel per frame", bpp)})
+		}
 	}
 	if m.AudioCodec != "" {
 		rows = append(rows, kv{"audio codec", m.AudioCodec}, kv{"audio bitrate", ui.Bitrate(m.AudioBitrate)},

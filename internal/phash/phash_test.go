@@ -3,6 +3,7 @@ package phash
 import (
 	"context"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,6 +48,58 @@ func TestVideo(t *testing.T) {
 	cancel()
 	if _, err := h.Video(cctx, s.Video, 10); !errors.Is(err, context.Canceled) {
 		t.Errorf("cancelled: %v", err)
+	}
+}
+
+func TestVideoAudioLongerThanPicture(t *testing.T) {
+	for _, ext := range []string{".mp4", ".mkv"} { // stream duration, then the DURATION tag
+		t.Run(ext, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "long-audio"+ext)
+			testmedia.GenerateLongAudio(t, path)
+			h := Hasher{}
+			ctx := context.Background()
+			if _, err := h.video(ctx, path, 8); err == nil {
+				t.Fatal("frames past the picture should fail at the container duration")
+			}
+			stream, err := h.streamDuration(ctx, path)
+			if err != nil || stream < 3.9 || stream > 4.1 {
+				t.Fatalf("stream duration %v %v, want about 4s", stream, err)
+			}
+			got, err := h.Video(ctx, path, 8)
+			if err != nil {
+				t.Fatalf("hash with the stream duration: %v", err)
+			}
+			if want, _ := h.video(ctx, path, stream); got != want {
+				t.Errorf("hash %x, want the stream-duration hash %x", got, want)
+			}
+		})
+	}
+}
+
+func TestHashDurationKeepsStashsWhenFramesFit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "long-audio.mp4")
+	testmedia.GenerateLongAudio(t, path) // 4s picture, 8s container
+	h := Hasher{}
+	ctx := context.Background()
+	// 4.3s: the last sample (91.4%, 3.93s) is still inside the picture, so Stash's
+	// container duration is kept.
+	if d := h.hashDuration(ctx, path, 4.3); d != 4.3 {
+		t.Errorf("duration %v, want the container's 4.3", d)
+	}
+	if d := h.hashDuration(ctx, path, 8); d < 3.9 || d > 4.1 {
+		t.Errorf("duration %v, want the stream's 4s", d)
+	}
+	if d := h.hashDuration(ctx, filepath.Join(t.TempDir(), "none.mp4"), 8); d != 8 {
+		t.Errorf("unreadable file: duration %v, want the container's", d)
+	}
+}
+
+func TestParseClock(t *testing.T) {
+	for in, want := range map[string]float64{"00:06:41.852969000": 401.852969, "01:00:00": 3600, "41.5": 0, "a:b:c": 0} {
+		if got := parseClock(in); math.Abs(got-want) > 1e-6 {
+			t.Errorf("parseClock(%q) = %v, want %v", in, got, want)
+		}
 	}
 }
 

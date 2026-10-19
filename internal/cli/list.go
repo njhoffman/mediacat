@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"time"
@@ -26,6 +27,7 @@ type listFlags struct {
 	minVBR, maxVBR                      string
 	minABR, maxABR                      string
 	minFPS, maxFPS                      float64
+	minBPP, maxBPP                      float64
 	minYear, maxYear                    int
 	codecs, vcodecs, acodecs            []string
 	containers, exts                    []string
@@ -63,7 +65,11 @@ frame (720p, 1080p, 4k, 1920x1080). Bitrates take decimal units (128k, 4.5M).
 Dates take 2026-01-31 or an age (7d, 2w, 3mo). Text filters match anywhere,
 ignoring case.
 
-Size, duration, resolution and video bitrate cells are tinted from pale yellow to red
+bpp is video bits per pixel per frame (video bitrate / (width x height x fps)): how
+heavily a video is encoded, whatever its resolution. Typical H.264 is 0.05-0.1; well
+above that is usually a bloated encode.
+
+Size, duration, resolution, video bitrate and bpp cells are tinted from pale yellow to red
 as values exceed the list.highlight thresholds in the config. The first column marks
 files with a known identical copy (` + dupMarker + `), from the full hashes mediacat dupes computes.`,
 		Example: `  mediacat list --type video --min-res 1080p --min-duration 10m --sort -size
@@ -106,6 +112,8 @@ files with a known identical copy (` + dupMarker + `), from the full hashes medi
 	f.StringVar(&lf.maxABR, "max-abitrate", "", "maximum audio stream bitrate")
 	f.Float64Var(&lf.minFPS, "min-fps", 0, "minimum frame rate")
 	f.Float64Var(&lf.maxFPS, "max-fps", 0, "maximum frame rate")
+	f.Float64Var(&lf.minBPP, "min-bpp", 0, "minimum video bits per pixel per frame, e.g. 0.15")
+	f.Float64Var(&lf.maxBPP, "max-bpp", 0, "maximum video bits per pixel per frame")
 	f.IntVar(&lf.minYear, "min-year", 0, "minimum tag year")
 	f.IntVar(&lf.maxYear, "max-year", 0, "maximum tag year")
 	f.StringSliceVar(&lf.codecs, "codec", nil, "video or audio codec, e.g. h264,hevc,mp3 (repeatable)")
@@ -149,7 +157,7 @@ func (lf listFlags) parse(now time.Time) (filter.Filter, error) {
 	f := filter.Filter{Kind: strings.ToLower(lf.kind), Limit: lf.limit, Missing: lf.missing, Errors: lf.errOnly,
 		Codecs: filter.SplitList(lf.codecs), VCodecs: filter.SplitList(lf.vcodecs), ACodecs: filter.SplitList(lf.acodecs),
 		Containers: filter.SplitList(lf.containers), Exts: filter.SplitList(lf.exts),
-		MinFPS: lf.minFPS, MaxFPS: lf.maxFPS, MinYear: lf.minYear, MaxYear: lf.maxYear,
+		MinFPS: lf.minFPS, MaxFPS: lf.maxFPS, MinBPP: lf.minBPP, MaxBPP: lf.maxBPP, MinYear: lf.minYear, MaxYear: lf.maxYear,
 		Name: lf.name, Path: lf.path, Artist: lf.artist, Album: lf.album, Title: lf.title, Genre: lf.genre,
 		Checks: filter.SplitList(lf.checks), Duplicates: lf.duplicates}
 	var err error
@@ -322,6 +330,7 @@ type fileJSON struct {
 	AudioCodec   string     `json:"audio_codec,omitempty"`
 	Bitrate      int64      `json:"bitrate,omitempty"`
 	VideoBitrate int64      `json:"video_bitrate,omitempty"`
+	BPP          float64    `json:"bpp,omitempty"`
 	AudioBitrate int64      `json:"audio_bitrate,omitempty"`
 	FPS          float64    `json:"fps,omitempty"`
 	SampleRate   int        `json:"sample_rate,omitempty"`
@@ -350,7 +359,7 @@ func toJSON(f catalog.File) fileJSON {
 	j := fileJSON{Path: f.AbsPath, Volume: f.VolumeKey, RelPath: f.RelPath, Kind: f.Kind, Size: f.Size,
 		Modified: time.Unix(0, f.MtimeNS).UTC(), Container: m.Container, DurationMS: m.DurationMS,
 		Width: m.Width, Height: m.Height, VideoCodec: m.VideoCodec, AudioCodec: m.AudioCodec,
-		Bitrate: m.Bitrate, VideoBitrate: m.VideoBitrate, AudioBitrate: m.AudioBitrate, FPS: m.FPS, SampleRate: m.SampleRate, Channels: m.Channels,
+		Bitrate: m.Bitrate, VideoBitrate: m.VideoBitrate, BPP: math.Round(m.BPP()*1e4) / 1e4, AudioBitrate: m.AudioBitrate, FPS: m.FPS, SampleRate: m.SampleRate, Channels: m.Channels,
 		ProbeError: f.ProbeError, ScannedAt: f.ScannedAt.UTC(), MissingSince: f.MissingSince}
 	if f.PHash.OK() {
 		j.PHash = fmt.Sprintf("%016x", f.PHash.Value)

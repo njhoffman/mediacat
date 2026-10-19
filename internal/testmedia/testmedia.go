@@ -136,3 +136,13 @@ func GenerateStill(t testing.TB, path string) {
 	run(t, "-f", "lavfi", "-i", "testsrc=size=320x240:rate=30", "-frames:v", "1",
 		"-c:v", "libx264", "-pix_fmt", "yuv420p", path)
 }
+
+// GenerateLongAudio writes a video whose 4s picture is followed by 4 more seconds of audio,
+// so the container is longer than the video stream. The extension picks the container.
+func GenerateLongAudio(t testing.TB, path string) {
+	t.Helper()
+	Generate(t, t.TempDir()) // skips when ffmpeg is missing
+	run(t, "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25:duration=4",
+		"-f", "lavfi", "-i", "sine=frequency=440:duration=8",
+		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", path)
+}

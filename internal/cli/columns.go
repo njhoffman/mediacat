@@ -31,6 +31,7 @@ var columnDefs = map[string]columnDef{
 	filter.FieldRes: {title: "RES", right: true}, filter.FieldWidth: {title: "WIDTH", right: true},
 	filter.FieldHeight: {title: "HEIGHT", right: true}, filter.FieldFPS: {title: "FPS", right: true},
 	filter.FieldBitrate: {title: "BITRATE", right: true}, filter.FieldVBitrate: {title: "V-BITRATE", right: true},
+	filter.FieldBPP:      {title: "BPP", right: true},
 	filter.FieldABitrate: {title: "A-BITRATE", right: true}, filter.FieldCodec: {title: "CODEC"},
 	filter.FieldVCodec: {title: "VCODEC"}, filter.FieldACodec: {title: "ACODEC"}, filter.FieldContainer: {title: "CONTAINER"},
 	filter.FieldChannels: {title: "CH", right: true}, filter.FieldSampleRate: {title: "RATE", right: true},
@@ -170,6 +171,13 @@ func cellFor(field string, f catalog.File, base string, h config.Highlights) ui.
 		text = ui.Bitrate(m.Bitrate)
 	case filter.FieldVBitrate:
 		return ui.Cell{Text: ui.Bitrate(m.VideoBitrate), Style: ui.Heat(h.VBitrate.Level(float64(m.VideoBitrate)))}
+	case filter.FieldBPP:
+		bpp := m.BPP()
+		text = "-"
+		if bpp > 0 {
+			text = fmt.Sprintf("%.3f", bpp)
+		}
+		return ui.Cell{Text: text, Style: ui.Heat(h.BPP.Level(bpp))}
 	case filter.FieldABitrate:
 		text = ui.Bitrate(m.AudioBitrate)
 	case filter.FieldCodec:
