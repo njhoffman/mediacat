@@ -67,12 +67,14 @@ dupes:
   # Keep copies under these directories (first wins) / avoid keeping copies under these.
   prefer: []
   avoid: []
-  # For the "paths" rule: keep the copy whose path contains one of these (case-insensitive,
-  # earlier entries win). A leading "^" means avoid keeping copies whose path contains it.
-  # "/sorted" matches a folder named Sorted but not "Unsorted"; plain "sorted" would match both.
+  # For the "paths" rule: keep the copy whose path contains one of these (case-sensitive,
+  # earlier entries win). A leading "^" means avoid keeping copies whose path contains it,
+  # and an avoided match outweighs a preferred one (Sorted/x/Incoming counts as Incoming).
+  # "/Sorted" matches a folder named Sorted but not "Unsorted" or "sorted".
   preferred_paths:
-    - /sorted
-    - "^incoming"
+    - /Sorted
+    - "^/Unsorted"
+    - "^/Incoming"
   # Default destination for "move" in dupes --review and when --move-to is not given.
   move_to: ""
   # Ignore files smaller than this.
@@ -243,6 +245,7 @@ var previousTemplates = map[string]bool{
 	"82a6812b1af27d67afc60b5eedfaa85c59fd05a7baa6e0c295a524ba1772817f": true,
 	"619f4449a73fbc916ace72615830b6c9cfc0e5ece35f4820080542f9e9ea4af5": true,
 	"c539fe87dffa52429da781eba1a4053ee19cd183178403521a204085dd52f47e": true,
+	"d766e507b559093aa6fd2c386315c23ee734c3fd81bb5a3cdb50676af87dd035": true,
 }
 
 // Status reports what Load did to the file.

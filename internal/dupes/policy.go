@@ -13,7 +13,7 @@ import (
 var Rules = map[string]string{
 	"prefer":   "keep copies under a --prefer directory (earlier directories win)",
 	"avoid":    "keep copies outside --avoid directories",
-	"paths":    `keep copies whose path contains a preferred pattern; "^pattern" avoids it (case-insensitive)`,
+	"paths":    `keep copies whose path contains a preferred pattern; "^pattern" avoids it (case-sensitive)`,
 	"plain":    `keep names without copy markers like "(1)", " - Copy", "_2"`,
 	"oldest":   "keep the oldest modification time",
 	"newest":   "keep the newest modification time",
@@ -42,12 +42,13 @@ type Policy struct {
 	PathAvoid  []string
 }
 
-// SetPathPatterns parses preferred-path patterns such as ["sorted", "^incoming"].
+// SetPathPatterns parses preferred-path patterns such as ["/Sorted", "^/Incoming"]. They
+// match case-sensitively.
 func (p *Policy) SetPathPatterns(patterns []string) error {
 	p.PathPrefer, p.PathAvoid = nil, nil
 	for _, pat := range patterns {
 		avoid := strings.HasPrefix(pat, "^")
-		pat = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(pat, "^")))
+		pat = strings.TrimSpace(strings.TrimPrefix(pat, "^"))
 		if pat == "" {
 			return fmt.Errorf("empty preferred path pattern")
 		}
@@ -168,16 +169,15 @@ func (p Policy) less(a, b catalog.File) bool {
 // pathScore ranks a path by its patterns: each avoided pattern it contains outweighs any
 // preference; among preferred patterns, earlier ones rank higher. Lower is better.
 func (p Policy) pathScore(path string) int64 {
-	lower := strings.ToLower(path)
 	score := int64(len(p.PathPrefer))
 	for i, pat := range p.PathPrefer {
-		if strings.Contains(lower, pat) {
+		if strings.Contains(path, pat) {
 			score = int64(i)
 			break
 		}
 	}
 	for _, pat := range p.PathAvoid {
-		if strings.Contains(lower, pat) {
+		if strings.Contains(path, pat) {
 			score += int64(len(p.PathPrefer)) + 1
 		}
 	}

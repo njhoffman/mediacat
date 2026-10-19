@@ -35,8 +35,8 @@ install: build
 version:
     @echo {{version}}
 
-# Tag a release (patch, minor or major bump of the latest vX.Y.Z tag), then rebuild and relink.
-# Needs a clean tree and an untagged HEAD; push tags yourself with: git push --tags
+# Tag a release (patch, minor or major bump of the latest vX.Y.Z tag), push the branch and
+# the tag to origin, then rebuild and relink. Needs a clean tree and an untagged HEAD.
 release LEVEL:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -55,6 +55,7 @@ release LEVEL:
     esac
     git tag -a "$next" -m "mediacat $next"
     echo "tagged $next (was ${last:-none})"
+    git push origin HEAD "refs/tags/$next"
     just build
 
 # Run from source without building, e.g. just run dupes --help

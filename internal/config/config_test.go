@@ -12,7 +12,7 @@ import (
 func TestTemplateIsDefault(t *testing.T) {
 	c := Default()
 	if c.StaleDays != 30 || c.Dupes.Depth != "full" || len(c.Scan.Exclude) != 9 || c.ProbeTimeout.Minutes() != 2 ||
-		len(c.Dupes.PreferredPaths) != 2 || c.Dupes.PreferredPaths[0] != "/sorted" || c.Dupes.PreferredPaths[1] != "^incoming" || !strings.Contains(c.Dupes.Keep, "paths") ||
+		strings.Join(c.Dupes.PreferredPaths, " ") != "/Sorted ^/Unsorted ^/Incoming" || !strings.Contains(c.Dupes.Keep, "paths") ||
 		c.List.Columns == "" || c.List.AudioColumns == "" {
 		t.Errorf("defaults: %+v", c)
 	}

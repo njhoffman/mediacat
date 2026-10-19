@@ -125,7 +125,7 @@ always asks you to type "delete".`,
 	f.StringVar(&df.keep, "keep", d.Keep, "rules choosing the copy to keep, in order")
 	f.StringSliceVar(&df.prefer, "prefer", d.Prefer, "keep copies under this directory (repeatable, first wins)")
 	f.StringSliceVar(&df.avoid, "avoid", d.Avoid, "avoid keeping copies under this directory (repeatable)")
-	f.StringSliceVar(&df.paths, "prefer-path", d.PreferredPaths, `"paths" rule: prefer copies whose path contains this; "^x" avoids x (repeatable, case-insensitive)`)
+	f.StringSliceVar(&df.paths, "prefer-path", d.PreferredPaths, `"paths" rule: prefer copies whose path contains this; "^x" avoids x (repeatable, case-sensitive)`)
 	f.BoolVar(&df.trash, "trash", false, "move extra copies to the trash on their own drive")
 	f.BoolVar(&df.del, "delete", false, "permanently delete extra copies")
 	f.StringVar(&df.moveTo, "move-to", "", "move extra copies under this directory")

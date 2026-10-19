@@ -215,8 +215,10 @@ Measured on the share: full hashing ran at ~37 MB/s with 2 workers (6 large cand
   (0.15-0.4): it flags heavy encodes at any resolution, which absolute vbitrate cannot.
 - ffprobe's MPEG-1/2 variable-bitrate marker (bit_rate 104857200) is treated as unknown;
   migration 7 re-derives rows holding it from their stored ffprobe JSON.
-- Dupes keep rule `paths` with `dupes.preferred_paths` (default `/sorted`, `^incoming`):
-  case-insensitive substrings, "^" avoids; an avoided match outweighs a preferred one.
+- Dupes keep rule `paths` with `dupes.preferred_paths` (default `/Sorted`, `^/Unsorted`,
+  `^/Incoming`): case-sensitive substrings (the library's folders are capitalized), "^"
+  avoids; an avoided match outweighs a preferred one, so Sorted/x/Incoming counts as
+  Incoming but still beats Unsorted.
 - Per-stream video and audio bitrates are recorded (stream `bit_rate`, else mkvmerge `BPS`
   tags, else derived from the container rate). Upgrading backfills them from stored ffprobe
   JSON; files whose streams report no rate at all stay unknown until re-probed.
@@ -323,7 +325,8 @@ Measured on the share: full hashing ran at ~37 MB/s with 2 workers (6 large cand
 ## Versioning
 
 - Semver tags `vX.Y.Z` (pre-1.0: minor for features or schema changes, patch for fixes).
-  v0.5.0 marks phases 1-5. `just release patch|minor|major` tags HEAD, rebuilds with
+  v0.5.0 marks phases 1-5. `just release patch|minor|major` tags HEAD, pushes the branch
+  and tag to origin (github.com/njhoffman/mediacat), rebuilds with
   `git describe` stamped into `--version`, and links `~/.local/bin/mediacat` to the repo
   binary; every `just build` refreshes that link.
 
