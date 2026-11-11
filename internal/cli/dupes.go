@@ -55,6 +55,7 @@ type dupesFlags struct {
 	onlyUnder []string
 	keepPref  bool
 	applySav  bool
+	summaryBy []string
 	policy    dupes.Policy // parsed keep policy, for guards
 	stash     map[string]stash.Role
 
@@ -109,6 +110,11 @@ With a Stash install (--stash-config), the "stash" rule keeps the file Stash use
 scene's or image's primary file is never trashed, moved or deleted, whichever copy is
 kept: such copies are listed as left in place.
 
+--summary-by DIR sorts the groups by where their copies are: kept copy inside DIR with
+the others outside, several copies inside, kept copy outside with some inside, or none
+inside, with the bytes the current rules and guards would reclaim (report only; --json
+prints it as JSON). Use it to choose flags before running an action.
+
 --keep-all-preferred keeps every copy whose path matches a preferred path pattern (and no
 avoided one) and acts only on the rest: with the default patterns, every copy under
 /Sorted stays and copies elsewhere go, even when a group has several in /Sorted.
@@ -122,6 +128,7 @@ always asks you to type "delete".`,
   mediacat dupes /mnt/nfs/Stash --trash --only-under /mnt/nfs/Stash/Incoming
   mediacat dupes /mnt/nfs/Stash --trash --keep-all-preferred
   mediacat dupes /mnt/nfs/Stash --apply-saved --execute --yes
+  mediacat dupes /mnt/nfs/Stash --summary-by /mnt/nfs/Stash/Sorted --keep-all-preferred
   mediacat dupes /mnt/nfs/Stash --similar --review
   mediacat dupes ~/Pictures --similar=medium --type image
   mediacat dupes --trash --execute
@@ -152,6 +159,7 @@ always asks you to type "delete".`,
 	f.BoolVar(&df.del, "delete", false, "permanently delete extra copies")
 	f.StringVar(&df.moveTo, "move-to", "", "move extra copies under this directory")
 	f.StringSliceVar(&df.onlyUnder, "only-under", nil, "only trash, move or delete copies below this directory (repeatable)")
+	f.StringSliceVar(&df.summaryBy, "summary-by", nil, "summarize groups by where their copies are relative to this directory (repeatable)")
 	f.BoolVar(&df.applySav, "apply-saved", false, "apply the choices saved by --review (or decisions import) without the review screen")
 	f.BoolVar(&df.keepPref, "keep-all-preferred", false, "keep every copy matching a preferred path (--prefer-path), act on the rest")
 	f.BoolVar(&df.execute, "execute", false, "apply the action (otherwise a dry run)")
@@ -279,13 +287,21 @@ func (a *app) runDupes(dir string, df dupesFlags) error {
 	if err != nil {
 		return err
 	}
-	if len(df.onlyUnder) > 0 && kind == "" && !df.review && !df.applySav {
+	if len(df.onlyUnder) > 0 && kind == "" && !df.review && !df.applySav && len(df.summaryBy) == 0 {
 		return errors.New("--only-under limits an action: add --trash, --move-to DIR or --delete, or use --review")
 	}
 	if df.onlyUnder, err = absDirs(df.onlyUnder); err != nil {
 		return err
 	}
-	if df.keepPref && kind == "" && !df.review && !df.applySav {
+	if len(df.summaryBy) > 0 {
+		if kind != "" || df.review || df.applySav {
+			return errors.New("--summary-by only reports; run the action separately once the summary looks right")
+		}
+		if df.summaryBy, err = absDirs(df.summaryBy); err != nil {
+			return err
+		}
+	}
+	if df.keepPref && kind == "" && !df.review && !df.applySav && len(df.summaryBy) == 0 {
 		return errors.New("--keep-all-preferred limits an action: add --trash, --move-to DIR or --delete, or use --review")
 	}
 	policy, err := dupes.ParsePolicy(df.keep, prefer, avoid)
@@ -398,6 +414,22 @@ func (a *app) runDupes(dir string, df dupesFlags) error {
 		}
 		return a.runReview(ctx, kind, root, df, res, vols)
 	}
+	if len(df.summaryBy) > 0 {
+		areas := summarizeAreas(res.Groups, df.summaryBy, df.guard())
+		if df.asJSON {
+			return writeAreasJSON(a.stdout, areas)
+		}
+		where := root
+		if df.all {
+			where = "all mounted volumes"
+		}
+		a.printDupes(res, where, -1)
+		a.printAreas(areas)
+		if df.export != "" {
+			fmt.Fprintf(a.stdout, "\nExported %d groups to %s\n", len(res.Groups), df.export)
+		}
+		return nil
+	}
 	if df.asJSON {
 		return writeGroupsJSON(a.stdout, res.Groups)
 	}
@@ -507,6 +539,9 @@ func (a *app) printDupes(res *dupes.Result, where string, limit int) {
 	}
 	width := ui.Width(w)
 	for i, g := range res.Groups {
+		if limit < 0 { // a summary is shown instead of the groups
+			break
+		}
 		if limit > 0 && i == limit {
 			fmt.Fprintf(w, "\n%s\n", ui.Dim.Render(fmt.Sprintf("%d more groups not shown (--limit 0 shows all)", len(res.Groups)-limit)))
 			break

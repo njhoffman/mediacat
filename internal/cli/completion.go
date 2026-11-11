@@ -146,7 +146,7 @@ func (a *app) registerCompletions(root *cobra.Command) {
 				"partial\tsame size and sampled blocks", "size\tsame size only"))
 			mustRegister(cmd, "keep", completeList(keepRules()))
 			mustRegister(cmd, "similar", completeValues(similarLevels()...))
-			for _, f := range []string{"prefer", "avoid", "move-to", "only-under"} {
+			for _, f := range []string{"prefer", "avoid", "move-to", "only-under", "summary-by"} {
 				mustRegister(cmd, f, completeDirs)
 			}
 			mustRegister(cmd, "export", completeExt("csv", "json"))

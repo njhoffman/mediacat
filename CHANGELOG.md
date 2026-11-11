@@ -6,6 +6,16 @@ versions follow [semantic versioning](https://semver.org/) and are git tags
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-11
+
+### Added
+
+- `dupes --summary-by DIR` (repeatable): sorts the groups by where their
+  copies are (kept copy inside with the others outside, several inside, kept
+  copy outside with some inside, none inside) with the bytes the current keep
+  rules and guards would reclaim and the bytes they spare, to choose flags
+  before an action. Report only; `--json` prints it as JSON.
+
 ## [0.13.0] - 2026-11-11
 
 ### Added
