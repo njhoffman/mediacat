@@ -32,6 +32,57 @@ type Plan struct {
 	Ops     []Op
 	Volumes map[string]volume.Volume // by key, for files in the plan
 	Similar bool                     // some groups are perceptual matches, not identical copies
+	// Copies a guard kept out of the plan, with the reason.
+	Protected []Protected
+}
+
+// Protected is a redundant copy a guard refused to act on.
+type Protected struct {
+	File   catalog.File
+	Reason string
+}
+
+// Guard returns why a redundant copy must not be acted on, or "" to allow it. Guards run
+// after the keep rules, so they can only spare copies, never remove the kept one.
+type Guard func(catalog.File) string
+
+// Guards combines guards; the first reason given wins.
+func Guards(gs ...Guard) Guard {
+	return func(f catalog.File) string {
+		for _, g := range gs {
+			if g == nil {
+				continue
+			}
+			if r := g(f); r != "" {
+				return r
+			}
+		}
+		return ""
+	}
+}
+
+// OnlyUnder allows acting only on copies below one of dirs (absolute paths).
+func OnlyUnder(dirs []string) Guard {
+	if len(dirs) == 0 {
+		return nil
+	}
+	return func(f catalog.File) string {
+		for _, d := range dirs {
+			if f.AbsPath == d || strings.HasPrefix(f.AbsPath, strings.TrimSuffix(d, "/")+"/") {
+				return ""
+			}
+		}
+		return "outside --only-under"
+	}
+}
+
+// ProtectedBytes is the total size of the protected copies.
+func (p Plan) ProtectedBytes() int64 {
+	var n int64
+	for _, pr := range p.Protected {
+		n += pr.File.Size
+	}
+	return n
 }
 
 // Bytes is the total size of the files the plan touches.
@@ -43,9 +94,10 @@ func (p Plan) Bytes() int64 {
 	return n
 }
 
-// BuildPlan turns confirmed duplicate groups into operations on every non-kept copy.
-// Unconfirmed groups (size or partial matches) are never acted on.
-func BuildPlan(kind, root, moveTo string, groups []dupes.Group, vols map[string]volume.Volume) (Plan, error) {
+// BuildPlan turns confirmed duplicate groups into operations on every non-kept copy that
+// guard (which may be nil) allows. Unconfirmed groups (size or partial matches) are never
+// acted on.
+func BuildPlan(kind, root, moveTo string, groups []dupes.Group, vols map[string]volume.Volume, guard Guard) (Plan, error) {
 	p := Plan{Kind: kind, Root: root, MoveTo: moveTo, Volumes: vols}
 	for _, g := range groups {
 		if !g.Confirmed {
@@ -56,6 +108,12 @@ func BuildPlan(kind, root, moveTo string, groups []dupes.Group, vols map[string]
 		for i, f := range g.Files {
 			if i == g.Keep {
 				continue
+			}
+			if guard != nil {
+				if r := guard(f); r != "" {
+					p.Protected = append(p.Protected, Protected{File: f, Reason: r})
+					continue
+				}
 			}
 			op := Op{File: f, Keeper: keeper}
 			if kind == catalog.ActionMove {

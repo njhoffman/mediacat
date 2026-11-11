@@ -6,7 +6,13 @@ versions follow [semantic versioning](https://semver.org/) and are git tags
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-11
+
 ### Added
+
+- `dupes --only-under DIR` (repeatable): trash, move or delete only copies below
+  DIR, whichever copy the keep rules choose; the others stay in place and the
+  summary says how many and how large. Also limits what `--review` applies.
 
 - `TODO.md` with the work found while cleaning up a Stash library on
   2026-11-10: acting on chosen duplicate groups without the review screen,

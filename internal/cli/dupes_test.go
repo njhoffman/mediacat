@@ -252,3 +252,24 @@ func TestListMarksDuplicates(t *testing.T) {
 	}
 	_ = paths
 }
+
+func TestDupesOnlyUnder(t *testing.T) {
+	h, paths := dupeFixture(t)
+	backup := filepath.Join(h.dir, "backup")
+
+	if _, errs, code := h.run("dupes", h.dir, "--only-under", backup); code != 1 || !strings.Contains(errs, "limits an action") {
+		t.Errorf("--only-under without an action: %d %s", code, errs)
+	}
+	out, _ := h.ok("dupes", h.dir, "--trash", "--only-under", backup)
+	if !strings.Contains(out, "DRY RUN: 1 files") || !strings.Contains(out, "1 other copies") || !strings.Contains(out, "outside --only-under") {
+		t.Errorf("dry run:\n%s", out)
+	}
+	out, _ = h.ok("dupes", h.dir, "--trash", "--only-under", filepath.Join(h.dir, "nowhere"))
+	if !strings.Contains(out, "Nothing to do") || !strings.Contains(out, "2 other copies") {
+		t.Errorf("nothing under the directory:\n%s", out)
+	}
+	out, _ = h.ok("dupes", h.dir, "--trash", "--only-under", backup, "--execute", "--yes")
+	if !strings.Contains(out, "Done: 1 files") || exists(paths[1]) || !exists(paths[0]) || !exists(paths[2]) {
+		t.Fatalf("execute:\n%s", out)
+	}
+}

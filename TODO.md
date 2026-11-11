@@ -30,7 +30,7 @@ not be expressed with flags, so 434 decisions were written into
   FILE` (JSON or TSV: group hash, path to keep, action) loaded into
   `review_decisions`, so tools stop writing the table directly; reject rows
   whose group or kept path no longer matches the catalog.
-- [ ] **Limit actions to copies under a directory.** (p2) [feature]
+- [x] **Limit actions to copies under a directory.** (p2) [feature]
   `--only-under DIR` (repeatable): trash, move or delete only copies below
   DIR, never others, whatever the keep rules choose. A guard for "clean up
   Incoming and Unsorted, never touch Sorted".
@@ -44,6 +44,14 @@ not be expressed with flags, so 434 decisions were written into
   others outside", "2+ copies in Sorted", "none in Sorted") with bytes, so
   a cleanup can be planned before choosing an action. This took a custom
   script over `--export` JSON.
+- [ ] **Stale "lowercased" comment on path patterns.** (p3) [docs]
+  `internal/dupes/policy.go` `Policy.PathPrefer` still says the patterns
+  are lowercased, but since d9674b3 they match case-sensitively; fix the
+  comment so nobody reintroduces lowercasing.
+- [ ] **Clear applied decisions in one statement.** (p3) [perf]
+  `catalog.DeleteDecisions` runs one DELETE per key outside a transaction;
+  for hundreds of applied groups (434 in the cleanup) batch them with
+  `IN (...)` in chunks of 500, as `LoadDecisions` does.
 
 ## 2. Copying between drives
 

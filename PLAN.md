@@ -322,6 +322,31 @@ Measured on the share: full hashing ran at ~37 MB/s with 2 workers (6 large cand
   phashes in 3h23m wall, 17.9h CPU (~113 CPU-s per file; high-res decode dominates), found
   49 groups / 15.4 GiB reclaimable at high. Reruns use the cached phashes.
 
+## Guided cleanup (after the 2026-11-10 Stash cleanup)
+
+Agreed 2026-11-10; TODO.md section 1 tracks the items. Built in this order, one minor
+release each:
+
+- `--only-under DIR` (repeatable): a guard applied when the plan is built
+  (`actions.Guard`), after the keep rules. Copies outside every DIR are left in place and
+  reported per reason ("N other copies (X) left in place: outside --only-under"). The kept
+  copy may be outside DIR. Applies to flag actions and to review apply. Refused without an
+  action or `--review`.
+- `--keep-all-preferred` (instead of "leave ambiguous groups", which would also have kept
+  the Incoming copies): every copy matching a preferred `paths` pattern without an
+  avoided one is kept; the rest of the group is acted on.
+- `stash` keep rule: a scene's primary file, then a file Stash tracks, then untracked
+  (read-only from `scenes_files.primary`, matched by absolute path). It follows `paths` in
+  the default policy. Guard, always on when Stash's database is readable: a scene's
+  primary file is never acted on.
+- `--apply-saved`: applies saved review decisions for the groups found, with the usual
+  dry run, `--execute` and `--yes`; groups without a decision are left alone, stale ones
+  (kept path no longer in the group) are skipped with a warning.
+- `mediacat decisions import|list|clear`: import TSV or JSON Lines (group key, absolute
+  path to keep, action) into `review_decisions`, rejecting rows whose path is not
+  cataloged or (for content-hash keys) whose full hash differs from the key. Similar-group
+  keys are path-checked only.
+
 ## Versioning
 
 - Semver tags `vX.Y.Z` (pre-1.0: minor for features or schema changes, patch for fixes).

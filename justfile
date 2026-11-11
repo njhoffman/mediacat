@@ -121,6 +121,10 @@ list *ARGS: build
 info FILE *ARGS: build
     {{bin}} {{dbflag}} info "$@"
 
+#   --review   interactive selector: pick the copy to keep and trash/move/delete the rest per group
+#   --similar  perceptual matches (re-encodes, resizes, upscales) instead of byte-identical copies;
+#              optional level: --similar=exact|high|medium|low or 0-32 (default high)
+#   e.g. just dupes /mnt/nfs/Stash --similar --review
 # Find duplicates (dry run unless --execute), e.g. just dupes /mnt/nfs/Stash --trash
 dupes *ARGS: build
     {{bin}} {{dbflag}} dupes "$@"

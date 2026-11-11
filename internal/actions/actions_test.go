@@ -92,7 +92,7 @@ func (e *env) groups() []dupes.Group {
 
 func (e *env) plan(kind, moveTo string) Plan {
 	e.t.Helper()
-	p, err := BuildPlan(kind, e.dir, moveTo, e.groups(), map[string]volume.Volume{e.v.Key: e.v})
+	p, err := BuildPlan(kind, e.dir, moveTo, e.groups(), map[string]volume.Volume{e.v.Key: e.v}, nil)
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -317,7 +317,7 @@ func TestInterruptedBatch(t *testing.T) {
 
 func TestBuildPlanRejectsUnconfirmed(t *testing.T) {
 	g := dupes.Group{Files: []catalog.File{{}, {}}, Confirmed: false}
-	if _, err := BuildPlan(catalog.ActionTrash, "/", "", []dupes.Group{g}, nil); err == nil {
+	if _, err := BuildPlan(catalog.ActionTrash, "/", "", []dupes.Group{g}, nil, nil); err == nil {
 		t.Error("unconfirmed groups must not produce a plan")
 	}
 	f := catalog.File{AbsPath: "/other/x.mp4", VolumeKey: "net://h/share", RelPath: "other/x.mp4"}
@@ -373,5 +373,39 @@ func TestTrashRefusesOtherDevice(t *testing.T) {
 	}
 	if !exists(f) {
 		t.Error("file must stay in place")
+	}
+}
+
+func TestOnlyUnderGuard(t *testing.T) {
+	e := newEnv(t)
+	keep := e.write("Sorted/a/clip.mp4", "same content", 0)
+	sorted2 := e.write("Sorted/b/clip.mp4", "same content", 1)
+	incoming := e.write("Incoming/clip.mp4", "same content", 2)
+	e.write("Incomingx/clip.mp4", "same content", 3) // a sibling sharing the prefix is outside
+
+	guard := OnlyUnder([]string{filepath.Join(e.dir, "Incoming")})
+	p, err := BuildPlan(catalog.ActionTrash, e.dir, "", e.groups(), map[string]volume.Volume{e.v.Key: e.v}, guard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Ops) != 1 || p.Ops[0].File.AbsPath != incoming || p.Ops[0].Keeper.AbsPath != keep {
+		t.Fatalf("ops: %+v", p.Ops)
+	}
+	if len(p.Protected) != 2 || p.ProtectedBytes() != 24 || p.Protected[0].Reason != "outside --only-under" {
+		t.Fatalf("protected: %+v", p.Protected)
+	}
+	got := map[string]bool{}
+	for _, pr := range p.Protected {
+		got[pr.File.AbsPath] = true
+	}
+	if !got[sorted2] {
+		t.Errorf("Sorted copy not protected: %v", got)
+	}
+	if OnlyUnder(nil) != nil {
+		t.Error("no directories means no guard")
+	}
+	both := Guards(nil, func(catalog.File) string { return "" }, func(catalog.File) string { return "second" })
+	if both(catalog.File{}) != "second" {
+		t.Error("Guards should return the first non-empty reason")
 	}
 }

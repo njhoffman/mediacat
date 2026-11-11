@@ -52,6 +52,7 @@ type dupesFlags struct {
 	showFiles bool
 	review    bool
 	similar   string
+	onlyUnder []string
 
 	// Whether these flags were given, so --similar can pick its own defaults.
 	depthSet, keepSet, workersSet bool
@@ -94,12 +95,17 @@ and --delete is only available through --review.
 move, delete or leave each group (o opens a copy to check it). Choices are saved as you
 go; applying asks for the same confirmations as below.
 
+--only-under DIR limits trash, move and delete to copies below DIR (repeatable): other
+copies are never touched, whichever copy the keep rules choose, e.g. clean up Incoming
+and Unsorted without touching Sorted.
+
 Actions are a dry run unless --execute is given. --trash only uses the trash on the
 files' own drive; --move-to keeps the layout below path; --delete is permanent and
 always asks you to type "delete".`,
 		Example: `  mediacat dupes                                  # report duplicates here
   mediacat dupes /mnt/nfs/Stash --prefer /mnt/nfs/Stash/Sorted --trash
   mediacat dupes /mnt/nfs/Stash --review
+  mediacat dupes /mnt/nfs/Stash --trash --only-under /mnt/nfs/Stash/Incoming
   mediacat dupes /mnt/nfs/Stash --similar --review
   mediacat dupes ~/Pictures --similar=medium --type image
   mediacat dupes --trash --execute
@@ -129,6 +135,7 @@ always asks you to type "delete".`,
 	f.BoolVar(&df.trash, "trash", false, "move extra copies to the trash on their own drive")
 	f.BoolVar(&df.del, "delete", false, "permanently delete extra copies")
 	f.StringVar(&df.moveTo, "move-to", "", "move extra copies under this directory")
+	f.StringSliceVar(&df.onlyUnder, "only-under", nil, "only trash, move or delete copies below this directory (repeatable)")
 	f.BoolVar(&df.execute, "execute", false, "apply the action (otherwise a dry run)")
 	f.BoolVarP(&df.yes, "yes", "y", false, "skip the confirmation for --trash and --move-to (never for --delete)")
 	f.BoolVar(&df.asJSON, "json", false, "print groups as JSON")
@@ -236,6 +243,12 @@ func (a *app) runDupes(dir string, df dupesFlags) error {
 	}
 	avoid, err := absDirs(df.avoid)
 	if err != nil {
+		return err
+	}
+	if len(df.onlyUnder) > 0 && kind == "" && !df.review {
+		return errors.New("--only-under limits an action: add --trash, --move-to DIR or --delete, or use --review")
+	}
+	if df.onlyUnder, err = absDirs(df.onlyUnder); err != nil {
 		return err
 	}
 	policy, err := dupes.ParsePolicy(df.keep, prefer, avoid)
@@ -536,12 +549,15 @@ func (a *app) act(ctx context.Context, kind, root string, df dupesFlags, groups 
 		}
 		moveTo = abs
 	}
-	plan, err := actions.BuildPlan(kind, root, moveTo, groups, vols)
+	plan, err := actions.BuildPlan(kind, root, moveTo, groups, vols, actions.OnlyUnder(df.onlyUnder))
 	if err != nil {
 		return false, err
 	}
 	if len(plan.Ops) == 0 {
 		fmt.Fprintln(a.stdout, "\nNothing to do.")
+		for _, l := range protectedLines(plan) {
+			fmt.Fprintln(a.stdout, ui.Dim.Render("  "+l))
+		}
 		return false, nil
 	}
 	trasher := actions.NewTrasher(a.res)
@@ -549,6 +565,7 @@ func (a *app) act(ctx context.Context, kind, root string, df dupesFlags, groups 
 	if err != nil {
 		return false, err
 	}
+	lines = append(lines, protectedLines(plan)...)
 	if !df.execute {
 		lines[0] = "DRY RUN: " + strings.Replace(lines[0], " will be ", " would be ", 1)
 		fmt.Fprintf(a.stdout, "\n%s\n", ui.Banner(level, lines...))
@@ -681,6 +698,31 @@ func (a *app) describePlan(p actions.Plan, trasher *actions.Trasher) (int, []str
 		lines = append(lines, fmt.Sprintf("One copy of each of the %s groups is kept. Undo with mediacat undo.", ui.Count(countGroups(p))))
 		return ui.LevelWarn, lines, nil
 	}
+}
+
+// protectedLines tells how many copies each guard spared, by reason.
+func protectedLines(p actions.Plan) []string {
+	type tally struct {
+		n     int
+		bytes int64
+	}
+	by := map[string]*tally{}
+	var order []string
+	for _, pr := range p.Protected {
+		t := by[pr.Reason]
+		if t == nil {
+			t = &tally{}
+			by[pr.Reason] = t
+			order = append(order, pr.Reason)
+		}
+		t.n++
+		t.bytes += pr.File.Size
+	}
+	var lines []string
+	for _, r := range order {
+		lines = append(lines, fmt.Sprintf("%s other copies (%s) left in place: %s.", ui.Count(by[r].n), ui.Bytes(by[r].bytes), r))
+	}
+	return lines
 }
 
 func isDir(p string) bool {
