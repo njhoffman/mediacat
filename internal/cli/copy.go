@@ -11,11 +11,13 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/njhoffman/mediacat/internal/actions"
 	"github.com/njhoffman/mediacat/internal/catalog"
+	"github.com/njhoffman/mediacat/internal/dropout"
 	"github.com/njhoffman/mediacat/internal/dupes"
 	"github.com/njhoffman/mediacat/internal/filter"
 	"github.com/njhoffman/mediacat/internal/stash"
@@ -35,6 +37,8 @@ type copyFlags struct {
 	workers   int
 	showFiles bool
 	limit     int
+	wait      time.Duration
+	bwlimit   string
 }
 
 func (a *app) copyCmd() *cobra.Command {
@@ -55,7 +59,9 @@ Existing files are never overwritten: name clashes are listed and skipped. Copyi
 before free space on the target would drop below --min-free. Each copy is written under
 a temporary name, flushed, read back from the drive and compared, then renamed into
 place with the original's modification time, and cataloged, so running the command
-again continues where it stopped.
+again continues where it stopped. If either drive drops out, copying waits up to --wait
+for it to come back (at any mount point) and redoes the file it was on; --bwlimit reads
+gently from a fragile drive.
 
 A dry run until --execute; --yes skips the confirmation. Undo a batch with mediacat
 undo, which removes copies only while their originals are still in place.`,
@@ -77,6 +83,8 @@ undo, which removes copies only while their originals are still in place.`,
 	f.IntVarP(&cf.workers, "workers", "j", 0, "parallel hashing (0: 2 network, 1 spinning disk, 4 otherwise)")
 	f.BoolVar(&cf.showFiles, "dry-run-files", false, "list every file that would be copied")
 	f.IntVarP(&cf.limit, "limit", "n", 20, "files and clashes to list (0 for all)")
+	f.DurationVar(&cf.wait, "wait", defaultWait, "how long to wait for a drive that dropped out to come back (0: stop)")
+	f.StringVar(&cf.bwlimit, "bwlimit", "", "cap reading (hashing, copying, verifying) at this rate per second, e.g. 40M")
 	cmd.MarkFlagRequired("to")
 	return cmd
 }
@@ -255,13 +263,61 @@ func (a *app) runCopy(source string, cf copyFlags) error {
 		}
 	}
 
-	srcFiles, err := a.db.Query(sStored.ID, srel, flt)
-	if err != nil {
+	if err := setReadLimit(cf.bwlimit); err != nil {
 		return err
 	}
-	tgtFiles, err := a.db.Query(tStored.ID, "", filter.Filter{MinSize: 1})
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	w := a.waiter(cf.wait)
+	var srcFiles []catalog.File
+	var res *dupes.Result
+	for attempt := 0; ; attempt++ {
+		var err error
+		srcFiles, res, err = a.copyCandidates(ctx, cancel, sStored.ID, srel, tStored.ID, flt, sv, tv, cf.workers)
+		if err != nil {
+			return err
+		}
+		if res.Interrupted || len(res.Deferred)+len(res.Failed)+len(res.Changed) == 0 || attempt >= maxRecoveries {
+			break
+		}
+		back, err := a.awaitGone(ctx, w, []string{sv.Key, tv.Key})
+		if err != nil {
+			return fmt.Errorf("%w; hashes computed so far are saved, run the same command again once it is back", err)
+		}
+		if !back {
+			break
+		}
+		sv, tv, sroot, dest = a.remount(sv, tv, sroot, dest)
+	}
+	if res.Interrupted {
+		fmt.Fprintf(a.stdout, "%s Hashes computed so far are saved; run the same command again to continue.\n", ui.Warn.Render("Interrupted."))
+		return errInterrupted{}
+	}
+	return a.planCopy(ctx, cf, srcFiles, res, sv, tv, sroot, dest, tStored.ID, rules, minFree, w)
+}
+
+// remount follows drives that came back at another mount point.
+func (a *app) remount(sv, tv volume.Volume, sroot, dest string) (volume.Volume, volume.Volume, string, string) {
+	if nv, ok := a.res.Lookup(sv.Key); ok {
+		sroot = dropout.Remap(sroot, sv.MountPoint, nv.MountPoint)
+		sv = nv
+	}
+	if nv, ok := a.res.Lookup(tv.Key); ok {
+		dest = dropout.Remap(dest, tv.MountPoint, nv.MountPoint)
+		tv = nv
+	}
+	return sv, tv, sroot, dest
+}
+
+// copyCandidates hashes the source and target files whose sizes occur on both sides.
+func (a *app) copyCandidates(ctx context.Context, cancel func(), sID int64, srel string, tID int64, flt filter.Filter, sv, tv volume.Volume, workers int) ([]catalog.File, *dupes.Result, error) {
+	srcFiles, err := a.db.Query(sID, srel, flt)
 	if err != nil {
-		return err
+		return nil, nil, err
+	}
+	tgtFiles, err := a.db.Query(tID, "", filter.Filter{MinSize: 1})
+	if err != nil {
+		return nil, nil, err
 	}
 	all := append(append([]catalog.File(nil), srcFiles...), tgtFiles...)
 	a.mountedOnly(all)
@@ -281,7 +337,6 @@ func (a *app) runCopy(source string, cf copyFlags) error {
 			candidates = append(candidates, f)
 		}
 	}
-	workers := cf.workers
 	if workers == 0 {
 		switch {
 		case sv.Network || tv.Network:
@@ -292,8 +347,6 @@ func (a *app) runCopy(source string, cf copyFlags) error {
 			workers = 4
 		}
 	}
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
 	pol, _ := dupes.ParsePolicy(dupes.DefaultPolicy, nil, nil)
 	var res *dupes.Result
 	prog := ui.Progress{Out: a.stderr, Cancel: cancel}
@@ -305,13 +358,12 @@ func (a *app) runCopy(source string, cf copyFlags) error {
 		res, err = (&dupes.Finder{DB: a.db, Options: dupes.Options{Depth: dupes.DepthFull, Workers: workers, Policy: pol, Progress: progress}}).Find(ctx, candidates)
 		return err
 	})
-	if err != nil {
-		return err
-	}
-	if res.Interrupted {
-		fmt.Fprintf(a.stdout, "%s Hashes computed so far are saved; run the same command again to continue.\n", ui.Warn.Render("Interrupted."))
-		return errInterrupted{}
-	}
+	return srcFiles, res, err
+}
+
+// planCopy works out what to copy from the search and copies it when asked.
+func (a *app) planCopy(ctx context.Context, cf copyFlags, srcFiles []catalog.File, res *dupes.Result, sv, tv volume.Volume,
+	sroot, dest string, tvolID int64, rules []copyRule, minFree int64, dw *dropout.Waiter) error {
 
 	// Files whose content could not be confirmed are not copied this run.
 	skip := map[string]bool{}
@@ -420,10 +472,10 @@ func (a *app) runCopy(source string, cf copyFlags) error {
 			return nil
 		}
 	}
-	return a.executeCopy(ctx, sroot, dest, items[:fits], tv, tStored.ID, minFree, !cf.noVerify)
+	return a.executeCopy(ctx, sroot, dest, items[:fits], sv, tv, tvolID, minFree, !cf.noVerify, dw)
 }
 
-func (a *app) executeCopy(ctx context.Context, sroot, dest string, items []copyItem, tv volume.Volume, tvolID int64, minFree int64, verify bool) error {
+func (a *app) executeCopy(ctx context.Context, sroot, dest string, items []copyItem, sv, tv volume.Volume, tvolID int64, minFree int64, verify bool, dw *dropout.Waiter) error {
 	batch, err := a.db.StartBatch(catalog.ActionCopy, sroot, dest, a.now())
 	if err != nil {
 		return err
@@ -439,7 +491,9 @@ func (a *app) executeCopy(ctx context.Context, sroot, dest string, items []copyI
 	prog := ui.Progress{Out: a.stderr, Cancel: cancel}
 	err = prog.Run(ctx, func(report func(ui.Update)) error {
 		var doneBytes int64
-		for i, it := range items {
+		recoveries := 0
+		for i := 0; i < len(items); i++ {
+			it := items[i]
 			if ctx.Err() != nil {
 				out.Interrupted = true
 				return nil
@@ -455,6 +509,24 @@ func (a *app) executeCopy(ctx context.Context, sroot, dest string, items []copyI
 			sum, err := actions.CopyFile(ctx, it.src.AbsPath, it.dest, it.src.FullHash, verify, func(n int64) {
 				report(ui.Update{Label: "Copying", Done: i, Total: len(items), Bytes: base + n, TotalBytes: total, Current: it.src.AbsPath})
 			})
+			if err != nil && !errors.Is(err, context.Canceled) && recoveries < maxRecoveries && (dw.Gone(sv.Key) || dw.Gone(tv.Key)) {
+				// A drive dropped out: wait for it, follow a new mount point, redo this file.
+				back, werr := a.awaitGone(ctx, dw, []string{sv.Key, tv.Key})
+				if werr != nil {
+					return fmt.Errorf("%w; run the same command again once it is back to copy the rest", werr)
+				}
+				if back {
+					recoveries++
+					oldS, oldT := sv.MountPoint, tv.MountPoint
+					sv, tv, sroot, dest = a.remount(sv, tv, sroot, dest)
+					for j := i; j < len(items); j++ {
+						items[j].src.AbsPath = dropout.Remap(items[j].src.AbsPath, oldS, sv.MountPoint)
+						items[j].dest = dropout.Remap(items[j].dest, oldT, tv.MountPoint)
+					}
+					i--
+					continue
+				}
+			}
 			var copied catalog.File
 			if err == nil {
 				copied, err = a.copiedFile(it, tv, tvolID)

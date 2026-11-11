@@ -56,6 +56,8 @@ type dupesFlags struct {
 	keepPref  bool
 	applySav  bool
 	summaryBy []string
+	wait      time.Duration
+	bwlimit   string
 	policy    dupes.Policy // parsed keep policy, for guards
 	stash     map[string]stash.Role
 
@@ -171,6 +173,8 @@ always asks you to type "delete".`,
 	f.BoolVar(&df.showFiles, "dry-run-files", false, "list every file the action would touch")
 	f.BoolVarP(&df.review, "review", "r", false, "choose the copy to keep and the action per group interactively")
 	f.StringVar(&df.similar, "similar", "", "find similar videos and images: exact, high, medium, low or a distance")
+	f.DurationVar(&df.wait, "wait", defaultWait, "how long to wait for a drive that dropped out to come back (0: stop)")
+	f.StringVar(&df.bwlimit, "bwlimit", "", "cap reading for hashes at this rate per second, e.g. 40M (fragile drives)")
 	f.Lookup("similar").NoOptDefVal = d.Similar
 	return cmd
 }
@@ -338,7 +342,7 @@ func (a *app) runDupes(dir string, df dupesFlags) error {
 	}
 
 	var volID int64
-	var prefix, root string
+	var prefix, root, rootKey string
 	workers := df.workers
 	if !df.all {
 		v, rel, err := a.res.Resolve(dir)
@@ -346,6 +350,7 @@ func (a *app) runDupes(dir string, df dupesFlags) error {
 			return err
 		}
 		root, _ = v.AbsPath(rel)
+		rootKey = v.Key
 		stored, err := a.db.VolumeByKey(v.Key)
 		if err != nil {
 			return err
@@ -369,31 +374,42 @@ func (a *app) runDupes(dir string, df dupesFlags) error {
 			}
 		}
 	}
-	files, err := a.db.Query(volID, prefix, flt)
-	if err != nil {
+	if err := setReadLimit(df.bwlimit); err != nil {
 		return err
 	}
-	vols := a.mountedOnly(files)
-
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	w := a.waiter(df.wait)
 	var res *dupes.Result
-	prog := ui.Progress{Out: a.stderr, Cancel: cancel}
-	err = prog.Run(ctx, func(report func(ui.Update)) error {
-		progress := func(e dupes.Event) {
-			report(ui.Update{Label: e.Stage, Done: e.Done, Total: e.Total, Bytes: e.Bytes, TotalBytes: e.TotalBytes, Current: e.Current})
-		}
-		var err error
-		if similar {
-			res, err = a.findSimilar(ctx, files, distance, policy, df, progress)
+	var vols map[string]volume.Volume
+	for attempt := 0; ; attempt++ {
+		files, err := a.db.Query(volID, prefix, flt)
+		if err != nil {
 			return err
 		}
-		finder := &dupes.Finder{DB: a.db, Options: dupes.Options{Depth: depth, Workers: workers, Policy: policy, Progress: progress}}
-		res, err = finder.Find(ctx, files)
-		return err
-	})
-	if err != nil {
-		return err
+		vols = a.mountedOnly(files)
+		if res, err = a.findDupes(ctx, cancel, files, similar, distance, depth, workers, policy, df); err != nil {
+			return err
+		}
+		if res.Interrupted || len(res.Deferred)+len(res.Failed)+len(res.Changed) == 0 || attempt >= maxRecoveries {
+			break
+		}
+		keys := make([]string, 0, len(vols))
+		for k := range vols {
+			keys = append(keys, k)
+		}
+		back, err := a.awaitGone(ctx, w, keys)
+		if err != nil {
+			return fmt.Errorf("%w; hashes computed so far are saved, run the same command again once it is back", err)
+		}
+		if !back {
+			break
+		}
+		if rootKey != "" {
+			if lv, ok := a.res.Lookup(rootKey); ok {
+				root, _ = lv.AbsPath(prefix)
+			}
+		}
 	}
 	if res.Interrupted {
 		fmt.Fprintf(a.stdout, "%s Hashes computed so far are saved; run the same command again to continue.\n", ui.Warn.Render("Interrupted."))
@@ -1000,4 +1016,24 @@ func exportGroups(path string, gs []dupes.Group) error {
 		os.Remove(path)
 	}
 	return err
+}
+
+// findDupes runs one exact or similar search over files.
+func (a *app) findDupes(ctx context.Context, cancel func(), files []catalog.File, similar bool, distance int, depth dupes.Depth, workers int, policy dupes.Policy, df dupesFlags) (*dupes.Result, error) {
+	var res *dupes.Result
+	prog := ui.Progress{Out: a.stderr, Cancel: cancel}
+	err := prog.Run(ctx, func(report func(ui.Update)) error {
+		progress := func(e dupes.Event) {
+			report(ui.Update{Label: e.Stage, Done: e.Done, Total: e.Total, Bytes: e.Bytes, TotalBytes: e.TotalBytes, Current: e.Current})
+		}
+		var err error
+		if similar {
+			res, err = a.findSimilar(ctx, files, distance, policy, df, progress)
+			return err
+		}
+		finder := &dupes.Finder{DB: a.db, Options: dupes.Options{Depth: depth, Workers: workers, Policy: policy, Progress: progress}}
+		res, err = finder.Find(ctx, files)
+		return err
+	})
+	return res, err
 }

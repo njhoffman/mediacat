@@ -41,6 +41,9 @@ type app struct {
 	interactive func() bool
 	// reviewRun shows the duplicate reviewer; tests replace it.
 	reviewRun func([]dupes.Group, []review.Choice, review.Options) (review.Result, error)
+	// lookup finds a volume in a fresh mount table, for drop-out detection; tests replace it.
+	lookup   func(key string) (volume.Volume, bool)
+	dropPoll time.Duration // drop-out poll interval; 0 uses the default
 
 	cfg        config.Config
 	configPath string

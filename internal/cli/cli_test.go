@@ -13,6 +13,7 @@ import (
 	"github.com/njhoffman/mediacat/internal/review"
 	"github.com/njhoffman/mediacat/internal/testmedia"
 	"github.com/njhoffman/mediacat/internal/ui"
+	"github.com/njhoffman/mediacat/internal/volume"
 )
 
 type harness struct {
@@ -25,6 +26,7 @@ type harness struct {
 	stashCfg    string
 	config      string
 	reviewRun   func([]dupes.Group, []review.Choice, review.Options) (review.Result, error)
+	lookup      func(key string) (volume.Volume, bool)
 }
 
 func newHarness(t *testing.T) *harness {
@@ -41,7 +43,7 @@ func (h *harness) run(args ...string) (stdout, stderr string, code int) {
 	h.t.Helper()
 	var out, errb bytes.Buffer
 	a := &app{stdin: strings.NewReader(h.stdin), stdout: &out, stderr: &errb, now: func() time.Time { return h.now },
-		interactive: func() bool { return h.interactive }, reviewRun: h.reviewRun}
+		interactive: func() bool { return h.interactive }, reviewRun: h.reviewRun, lookup: h.lookup, dropPoll: 10 * time.Millisecond}
 	code = a.run("test", append([]string{"--config", h.config, "--db", h.db, "--stash-config", h.stashCfg}, args...))
 	return out.String(), errb.String(), code
 }

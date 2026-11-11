@@ -375,3 +375,36 @@ func TestBaseExcludesReplaceDefaults(t *testing.T) {
 		t.Errorf("base excludes: %+v %v", sum, e.query(filter.Filter{}))
 	}
 }
+
+func TestDroppedDriveMarksNothingMissing(t *testing.T) {
+	e := newEnv(t)
+	e.write("a.mp4", "1")
+	e.write("b.mp4", "2")
+	e.scan(e.dir, Options{})
+	// The drive "drops out" during the next walk: b.mp4 is not seen, but the volume is
+	// gone at the end of the walk, so nothing is reconciled.
+	os.Remove(filepath.Join(e.dir, "b.mp4"))
+	sum, err := e.run(context.Background(), e.dir, Options{Gone: func() bool { return true }})
+	if !errors.Is(err, ErrDropped) || sum == nil || !sum.Interrupted || sum.Missing != 0 {
+		t.Fatalf("dropped scan: %+v %v", sum, err)
+	}
+	if got := e.query(filter.Filter{}); !same(got, []string{"a.mp4", "b.mp4"}) {
+		t.Errorf("nothing should be marked missing: %v", got)
+	}
+}
+
+func TestProbeErrorsWhileGoneAreDeferred(t *testing.T) {
+	e := newEnv(t)
+	e.write("a.mp4", "1")
+	e.prober.errs = map[string]error{"a.mp4": errors.New("No such file or directory")}
+	var calls atomic.Int32
+	// Present for the walk check, gone by the time the probe fails.
+	gone := func() bool { return calls.Add(1) > 1 }
+	sum := e.scan(e.dir, Options{Gone: gone})
+	if len(sum.Deferred) != 1 || len(sum.Failures) != 0 {
+		t.Fatalf("a probe error while the drive is gone must not be recorded: %+v", sum)
+	}
+	if got := e.query(filter.Filter{}); len(got) != 0 {
+		t.Errorf("nothing should be stored as broken: %v", got)
+	}
+}

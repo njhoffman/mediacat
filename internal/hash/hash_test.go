@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func write(t *testing.T, name string, data []byte) string {
@@ -102,5 +104,25 @@ func TestErrors(t *testing.T) {
 	}
 	if err := classify(os.ErrPermission); errors.Is(err, ErrTransient) {
 		t.Error("permission denied is not transient")
+	}
+}
+
+func TestReadLimit(t *testing.T) {
+	SetReadLimit(8 << 20) // 8 MiB/s
+	defer SetReadLimit(0)
+	src := bytes.NewReader(make([]byte, 4<<20))
+	start := time.Now()
+	if err := Copy(context.Background(), io.Discard, src, nil); err != nil {
+		t.Fatal(err)
+	}
+	// 4 MiB at 8 MiB/s is paid for after about half a second.
+	if d := time.Since(start); d < 400*time.Millisecond {
+		t.Errorf("4 MiB at 8 MiB/s took %s", d)
+	}
+	SetReadLimit(0)
+	start = time.Now()
+	Copy(context.Background(), io.Discard, bytes.NewReader(make([]byte, 4<<20)), nil)
+	if d := time.Since(start); d > 200*time.Millisecond {
+		t.Errorf("unlimited copy took %s", d)
 	}
 }

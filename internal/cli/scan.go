@@ -2,23 +2,27 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/njhoffman/mediacat/internal/dropout"
 	"github.com/njhoffman/mediacat/internal/probe"
 	"github.com/njhoffman/mediacat/internal/scan"
 	"github.com/njhoffman/mediacat/internal/ui"
+	"github.com/njhoffman/mediacat/internal/volume"
 )
 
 func (a *app) scanCmd() *cobra.Command {
 	var o scan.Options
-	var timeout time.Duration
+	var timeout, wait time.Duration
 	cmd := &cobra.Command{
 		Use:   "scan [path]",
 		Short: "Recursively catalog media files under path (default: current directory)",
@@ -30,6 +34,10 @@ on disk are marked missing; --prune removes them from the catalog instead.
 
 Ctrl-C stops after the files in progress and saves everything finished so far;
 running the same scan again continues where it left off.
+
+If the drive drops out (unplugged, reset, unmounted), nothing is marked missing or
+broken: the scan waits up to --wait for the drive to come back, at any mount point, and
+scans again (unchanged files are skipped).
 
 Names under scan.exclude in the config (trash and NAS metadata folders by default)
 are always skipped: ` + strings.Join(a.cfg.Scan.Exclude, " "),
@@ -43,7 +51,7 @@ are always skipped: ` + strings.Join(a.cfg.Scan.Exclude, " "),
 				return err
 			}
 			o.BaseExcludes = a.cfg.Scan.Exclude
-			return a.runScan(dir, o, timeout)
+			return a.runScan(dir, o, timeout, wait)
 		},
 	}
 	f := cmd.Flags()
@@ -52,13 +60,55 @@ are always skipped: ` + strings.Join(a.cfg.Scan.Exclude, " "),
 	f.BoolVar(&o.Force, "force", false, "re-probe every file, even unchanged ones")
 	f.StringSliceVar(&o.Excludes, "exclude", nil, "skip files and directories whose name matches this glob (repeatable)")
 	f.DurationVar(&timeout, "probe-timeout", a.cfg.ProbeTimeout, "give up on a single file after this long (retried next scan)")
+	f.DurationVar(&wait, "wait", defaultWait, "how long to wait for a drive that dropped out to come back (0: stop)")
 	return cmd
 }
 
-func (a *app) runScan(dir string, o scan.Options, timeout time.Duration) error {
+func (a *app) runScan(dir string, o scan.Options, timeout, wait time.Duration) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	v, _, err := a.res.Resolve(dir)
+	if err != nil {
+		return err
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		if real, err := filepath.EvalSymlinks(abs); err == nil {
+			dir = real
+		}
+	}
+	w := a.waiter(wait)
+	o.Gone = func() bool { return w.Gone(v.Key) }
+	for attempt := 0; ; attempt++ {
+		sum, err := a.scanOnce(ctx, cancel, dir, o, timeout)
+		dropped := errors.Is(err, scan.ErrDropped) || (err == nil && sum != nil && len(sum.Deferred) > 0 && w.Gone(v.Key))
+		if !dropped || attempt >= maxRecoveries {
+			if sum != nil {
+				a.printScanSummary(sum)
+			}
+			if err != nil {
+				return err
+			}
+			if sum.Interrupted {
+				return errInterrupted{}
+			}
+			return nil
+		}
+		back, werr := w.Await(ctx, v.Key)
+		if werr != nil {
+			if sum != nil {
+				a.printScanSummary(sum)
+			}
+			return fmt.Errorf("%w; nothing was marked missing. Scan again once it is back", werr)
+		}
+		dir = dropout.Remap(dir, v.MountPoint, back.MountPoint)
+		v = back
+		if res, rerr := volume.NewResolver(); rerr == nil && a.lookup == nil {
+			a.res = res
+		}
+	}
+}
 
+func (a *app) scanOnce(ctx context.Context, cancel func(), dir string, o scan.Options, timeout time.Duration) (*scan.Summary, error) {
 	var sum *scan.Summary
 	prog := ui.Progress{Out: a.stderr, Cancel: cancel}
 	err := prog.Run(ctx, func(report func(ui.Update)) error {
@@ -76,16 +126,7 @@ func (a *app) runScan(dir string, o scan.Options, timeout time.Duration) error {
 		sum, err = s.Run(ctx, dir)
 		return err
 	})
-	if sum != nil {
-		a.printScanSummary(sum)
-	}
-	if err != nil {
-		return err
-	}
-	if sum.Interrupted {
-		return errInterrupted{}
-	}
-	return nil
+	return sum, err
 }
 
 func (a *app) printScanSummary(s *scan.Summary) {

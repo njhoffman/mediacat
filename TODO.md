@@ -18,7 +18,7 @@ Reviewed: 2026-11-10
   never overwriting (list name clashes instead), stopping before the
   target's free space drops under a margin, logged for undo. Done by hand
   on 2026-11-10 for a USB drive's performer folders (rsync and a plan TSV).
-- [ ] **Survive drives that drop out.** (p2) [feature] scan, dupes hashing
+- [x] **Survive drives that drop out.** (p2) [feature] scan, dupes hashing
   and actions on a removable drive: on EIO or ENODEV, wait for the device to
   come back, remount it (read-only when asked), and continue the file, not
   fail the run; a `--bwlimit` to read gently. A WD USB drive disconnected

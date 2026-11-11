@@ -6,6 +6,24 @@ versions follow [semantic versioning](https://semver.org/) and are git tags
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-11
+
+### Added
+
+- Drives that drop out no longer fail the run: `scan`, `dupes` and `copy` wait
+  up to `--wait` (10m) for the drive to come back, at any mount point, then
+  carry on (`copy` redoes the file it was on; `scan` and `dupes` run again,
+  reusing everything already saved).
+- `dupes --bwlimit` and `copy --bwlimit` (e.g. `40M`) cap the read rate, to
+  read gently from a fragile drive.
+
+### Fixed
+
+- A scan whose drive drops out no longer marks the unseen files missing or
+  records probe errors as broken files; the scan stops (or waits) instead.
+- Reads failing with "no such device" are treated as transient, not as
+  unreadable files.
+
 ## [0.18.0] - 2026-11-11
 
 ### Added

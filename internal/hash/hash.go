@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/zeebo/xxh3"
 )
@@ -76,6 +78,9 @@ func Copy(ctx context.Context, dst io.Writer, src io.Reader, progress func(n int
 		}
 		n, err := src.Read(buf)
 		if n > 0 {
+			if werr := readLimit.wait(ctx, n); werr != nil {
+				return werr
+			}
 			if _, werr := dst.Write(buf[:n]); werr != nil {
 				return classify(werr)
 			}
@@ -104,10 +109,54 @@ func (h *Hasher) Write(p []byte) (int, error) { return h.h.Write(p) }
 func (h *Hasher) Sum() string { return encode(h.h) }
 
 func classify(err error) error {
-	for _, e := range []error{syscall.EIO, syscall.EAGAIN, syscall.ETIMEDOUT, syscall.EHOSTDOWN, syscall.ENOTCONN, syscall.ESTALE, syscall.ECONNRESET} {
+	for _, e := range []error{syscall.EIO, syscall.EAGAIN, syscall.ETIMEDOUT, syscall.EHOSTDOWN, syscall.ENOTCONN, syscall.ESTALE, syscall.ECONNRESET,
+		syscall.ENODEV, syscall.ENXIO} {
 		if errors.Is(err, e) {
 			return fmt.Errorf("%w: %v", ErrTransient, err)
 		}
 	}
 	return err
+}
+
+// limiter paces reads to a byte rate shared by every reader in the process.
+type limiter struct {
+	mu   sync.Mutex
+	rate float64   // bytes per second; 0 is unlimited
+	next time.Time // when the bytes read so far are paid for
+}
+
+var readLimit = &limiter{}
+
+// SetReadLimit caps the combined rate of full-file reads (hashing, copying, verifying) in
+// bytes per second, to read gently from a fragile drive. 0 removes the cap.
+func SetReadLimit(bytesPerSecond int64) {
+	readLimit.mu.Lock()
+	defer readLimit.mu.Unlock()
+	readLimit.rate, readLimit.next = float64(bytesPerSecond), time.Time{}
+}
+
+func (l *limiter) wait(ctx context.Context, n int) error {
+	l.mu.Lock()
+	if l.rate <= 0 {
+		l.mu.Unlock()
+		return nil
+	}
+	now := time.Now()
+	if l.next.Before(now) {
+		l.next = now
+	}
+	l.next = l.next.Add(time.Duration(float64(n) / l.rate * float64(time.Second)))
+	delay := l.next.Sub(now)
+	l.mu.Unlock()
+	if delay <= 0 {
+		return nil
+	}
+	t := time.NewTimer(delay)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }

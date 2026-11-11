@@ -64,7 +64,14 @@ type Options struct {
 	// BatchSize and BatchInterval bound how much probe work is lost if the process dies.
 	BatchSize     int
 	BatchInterval time.Duration
+	// Gone reports whether the volume being scanned has dropped out. When it has, the
+	// walk is not reconciled (unseen files would look missing) and probe errors are
+	// deferred instead of being recorded against the files.
+	Gone func() bool
 }
+
+// ErrDropped means the drive went away during the scan; nothing was marked missing.
+var ErrDropped = errors.New("the drive dropped out during the scan")
 
 // Failure is a file that could not be probed.
 type Failure struct {
@@ -173,6 +180,9 @@ func (s *Scanner) Run(ctx context.Context, dir string) (*Summary, error) {
 		return finish(catalog.ScanFailed, err)
 	}
 	sum.Seen = len(files)
+	if o.Gone != nil && o.Gone() {
+		return finish(catalog.ScanInterrupted, ErrDropped)
+	}
 
 	known, err := s.DB.Known(volID, root)
 	if err != nil {
@@ -479,7 +489,7 @@ func (s *Scanner) probeAll(ctx context.Context, volID int64, files []found, know
 		if s.Options.Progress != nil {
 			s.Options.Progress(ev)
 		}
-		if errors.Is(r.err, probe.ErrTransient) {
+		if errors.Is(r.err, probe.ErrTransient) || (r.err != nil && s.Options.Gone != nil && s.Options.Gone()) {
 			sum.Deferred = append(sum.Deferred, Failure{r.f.rel, r.err.Error()})
 			continue
 		}
