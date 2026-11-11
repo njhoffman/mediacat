@@ -54,6 +54,7 @@ type dupesFlags struct {
 	similar   string
 	onlyUnder []string
 	keepPref  bool
+	applySav  bool
 	policy    dupes.Policy // parsed keep policy, for guards
 	stash     map[string]stash.Role
 
@@ -96,7 +97,9 @@ and --delete is only available through --review.
 
 --review opens an interactive list of the groups: choose the copy to keep and trash,
 move, delete or leave each group (o opens a copy to check it). Choices are saved as you
-go; applying asks for the same confirmations as below.
+go; applying asks for the same confirmations as below. --apply-saved applies the saved
+choices without the screen, for scripts: a dry run until --execute, --yes skips the
+confirmation for trash and move. Groups without a saved choice are left alone.
 
 --only-under DIR limits trash, move and delete to copies below DIR (repeatable): other
 copies are never touched, whichever copy the keep rules choose, e.g. clean up Incoming
@@ -118,6 +121,7 @@ always asks you to type "delete".`,
   mediacat dupes /mnt/nfs/Stash --review
   mediacat dupes /mnt/nfs/Stash --trash --only-under /mnt/nfs/Stash/Incoming
   mediacat dupes /mnt/nfs/Stash --trash --keep-all-preferred
+  mediacat dupes /mnt/nfs/Stash --apply-saved --execute --yes
   mediacat dupes /mnt/nfs/Stash --similar --review
   mediacat dupes ~/Pictures --similar=medium --type image
   mediacat dupes --trash --execute
@@ -148,6 +152,7 @@ always asks you to type "delete".`,
 	f.BoolVar(&df.del, "delete", false, "permanently delete extra copies")
 	f.StringVar(&df.moveTo, "move-to", "", "move extra copies under this directory")
 	f.StringSliceVar(&df.onlyUnder, "only-under", nil, "only trash, move or delete copies below this directory (repeatable)")
+	f.BoolVar(&df.applySav, "apply-saved", false, "apply the choices saved by --review (or decisions import) without the review screen")
 	f.BoolVar(&df.keepPref, "keep-all-preferred", false, "keep every copy matching a preferred path (--prefer-path), act on the rest")
 	f.BoolVar(&df.execute, "execute", false, "apply the action (otherwise a dry run)")
 	f.BoolVarP(&df.yes, "yes", "y", false, "skip the confirmation for --trash and --move-to (never for --delete)")
@@ -176,6 +181,12 @@ func (df dupesFlags) action() (string, error) {
 	}
 	if n > 1 {
 		return "", errors.New("choose one of --trash, --delete and --move-to")
+	}
+	if df.applySav {
+		if df.trash || df.del {
+			return "", errors.New("--apply-saved applies each group's saved action; drop --trash and --delete (--move-to only sets where moves go)")
+		}
+		return "", nil
 	}
 	if df.execute && kind == "" {
 		return "", errors.New("--execute needs an action: --trash, --delete or --move-to")
@@ -232,6 +243,16 @@ func (a *app) runDupes(dir string, df dupesFlags) error {
 	if df.asJSON && kind != "" {
 		return errors.New("--json reports only; drop it to run an action")
 	}
+	if df.applySav {
+		switch {
+		case df.review:
+			return errors.New("--apply-saved applies saved choices without the review screen; drop --review")
+		case depth != dupes.DepthFull:
+			return errors.New("--apply-saved needs --depth full")
+		case df.asJSON:
+			return errors.New("--json reports only; drop it to apply saved choices")
+		}
+	}
 	if df.review {
 		switch {
 		case depth != dupes.DepthFull:
@@ -258,13 +279,13 @@ func (a *app) runDupes(dir string, df dupesFlags) error {
 	if err != nil {
 		return err
 	}
-	if len(df.onlyUnder) > 0 && kind == "" && !df.review {
+	if len(df.onlyUnder) > 0 && kind == "" && !df.review && !df.applySav {
 		return errors.New("--only-under limits an action: add --trash, --move-to DIR or --delete, or use --review")
 	}
 	if df.onlyUnder, err = absDirs(df.onlyUnder); err != nil {
 		return err
 	}
-	if df.keepPref && kind == "" && !df.review {
+	if df.keepPref && kind == "" && !df.review && !df.applySav {
 		return errors.New("--keep-all-preferred limits an action: add --trash, --move-to DIR or --delete, or use --review")
 	}
 	policy, err := dupes.ParsePolicy(df.keep, prefer, avoid)
@@ -279,7 +300,7 @@ func (a *app) runDupes(dir string, df dupesFlags) error {
 	}
 	roles, err := a.stashRoles()
 	if err != nil {
-		if kind != "" || df.review {
+		if kind != "" || df.review || df.applySav {
 			return fmt.Errorf("cannot read Stash's database, which is needed to protect the files its scenes use: %w (--stash-config \"\" acts without Stash)", err)
 		}
 		a.warn("not using Stash's database: " + err.Error())
@@ -368,9 +389,12 @@ func (a *app) runDupes(dir string, df dupesFlags) error {
 			return err
 		}
 	}
-	if df.review {
+	if df.review || df.applySav {
 		if root == "" {
 			root = "/"
+		}
+		if df.applySav {
+			return a.runApplySaved(ctx, root, df, res, vols)
 		}
 		return a.runReview(ctx, kind, root, df, res, vols)
 	}

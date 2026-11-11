@@ -22,7 +22,7 @@ not be expressed with flags, so 434 decisions were written into
   of letting later rules pick one. Chosen over leaving such groups
   untouched, which would also have kept their Incoming copies. With it,
   `dupes --trash` does the "only copies outside Sorted" pass directly.
-- [ ] **Apply saved review decisions without the review screen.** (p1)
+- [x] **Apply saved review decisions without the review screen.** (p1)
   [feature] `dupes --review --apply-saved` (or `dupes --apply-decisions`):
   apply the saved choices for the groups found, with the same summary and
   confirmations as review (`--yes` for trash and move). Lets a script or

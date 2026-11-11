@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -110,5 +111,59 @@ func TestReviewFlagErrors(t *testing.T) {
 		if _, errs, code := h.run(args...); code != 1 || !strings.Contains(errs, "--review") {
 			t.Errorf("%v: %d %s", args, code, errs)
 		}
+	}
+}
+
+func TestApplySaved(t *testing.T) {
+	h, paths := dupeFixture(t)
+
+	// Nothing saved yet: the group is left alone.
+	out, _ := h.ok("dupes", h.dir, "--apply-saved")
+	if !strings.Contains(out, "1 groups without a decision") || !strings.Contains(out, "Nothing to do") {
+		t.Errorf("no decisions:\n%s", out)
+	}
+	for _, args := range [][]string{
+		{"--apply-saved", "--trash"}, {"--apply-saved", "--review"}, {"--apply-saved", "--json"}, {"--apply-saved", "--depth", "size"},
+	} {
+		if _, errs, code := h.run(append([]string{"dupes", h.dir}, args...)...); code != 1 || errs == "" {
+			t.Errorf("%v should be refused: %d %s", args, code, errs)
+		}
+	}
+
+	// Save a choice in review without applying it, then apply it unattended.
+	h.interactive = true
+	h.reviewRun = pick("backup/clip.mp4", catalog.ActionTrash, false, nil, nil)
+	h.ok("dupes", h.dir, "--review")
+	h.interactive = false
+	out, _ = h.ok("dupes", h.dir, "--apply-saved")
+	if !strings.Contains(out, "1 trash, 0 move") || !strings.Contains(out, "DRY RUN: 2 files") || !exists(paths[0]) {
+		t.Fatalf("dry run:\n%s", out)
+	}
+	if _, errs, code := h.run("dupes", h.dir, "--apply-saved", "--execute"); code != 1 || !strings.Contains(errs, "--yes") {
+		t.Errorf("unattended execute without --yes: %d %s", code, errs)
+	}
+	out, _ = h.ok("dupes", h.dir, "--apply-saved", "--execute", "--yes")
+	if !strings.Contains(out, "Done: 2 files") || !exists(paths[1]) || exists(paths[0]) || exists(paths[2]) {
+		t.Fatalf("apply:\n%s", out)
+	}
+	// Applied decisions are forgotten.
+	h.ok("undo", "1", "--yes")
+	if out, _ = h.ok("dupes", h.dir, "--apply-saved"); !strings.Contains(out, "1 groups without a decision") {
+		t.Errorf("applied decision should be cleared:\n%s", out)
+	}
+}
+
+func TestApplySavedStale(t *testing.T) {
+	h, paths := dupeFixture(t)
+	h.interactive = true
+	h.reviewRun = pick("clip (1).mp4", catalog.ActionTrash, false, nil, nil)
+	h.ok("dupes", h.dir, "--review")
+	h.interactive = false
+	// The copy to keep disappears; the other two still form the same group.
+	os.Remove(paths[2])
+	h.ok("scan", h.dir)
+	out, errs := h.ok("dupes", h.dir, "--apply-saved", "--execute", "--yes")
+	if !strings.Contains(errs, "1 decisions skipped") || !strings.Contains(out, "Nothing to do") || !exists(paths[0]) || !exists(paths[1]) {
+		t.Errorf("stale decision:\n%s\n%s", out, errs)
 	}
 }

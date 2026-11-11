@@ -6,6 +6,16 @@ versions follow [semantic versioning](https://semver.org/) and are git tags
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-11
+
+### Added
+
+- `dupes --apply-saved`: apply the choices saved by `--review` without the
+  review screen, for scripts. A dry run until `--execute`; `--yes` skips the
+  confirmation for trash and move (never for delete). Groups without a saved
+  choice are left alone, and a choice whose kept copy is no longer in its
+  group is skipped with a warning. `--move-to` sets where saved moves go.
+
 ## [0.11.0] - 2026-11-11
 
 ### Added
