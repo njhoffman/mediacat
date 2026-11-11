@@ -6,6 +6,17 @@ versions follow [semantic versioning](https://semver.org/) and are git tags
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-11-11
+
+### Added
+
+- `--readonly` on `scan`, `check` and report-only `dupes`: mount a removable
+  (USB) drive read-only for the run, through udisks, and writable again
+  after, so a drive that drops out cannot be left with a damaged
+  filesystem. A drive in use is left alone; one already read-only stays so.
+  After a drop-out the drive is made read-only again before the run goes on.
+  `scan.readonly_removable: true` in the config makes it the default.
+
 ## [0.19.0] - 2026-11-11
 
 ### Added

@@ -19,6 +19,7 @@ type Mount struct {
 	MountPoint   string
 	FSType       string
 	Source       string
+	Options      string // per-mount options, e.g. "ro,nosuid,relatime"
 }
 
 // Volume identifies a filesystem independent of where it is currently mounted.
@@ -31,6 +32,18 @@ type Volume struct {
 	MountRoot  string
 	Network    bool
 	Rotational bool // spinning disk; network volumes report false
+	Removable  bool // a USB or other removable block device
+	Options    string
+}
+
+// ReadOnly reports whether the volume is mounted read-only.
+func (v Volume) ReadOnly() bool {
+	for _, o := range strings.Split(v.Options, ",") {
+		if o == "ro" {
+			return true
+		}
+	}
+	return false
 }
 
 // Slow reports whether the volume should be accessed with low concurrency.
@@ -93,6 +106,9 @@ func ParseMountInfo(r io.Reader) ([]Mount, error) {
 			FSType:     g[0],
 			Source:     unescape(g[1]),
 		}
+		if len(f) > 5 {
+			m.Options = f[5]
+		}
 		m.Major, _ = strconv.Atoi(maj)
 		m.Minor, _ = strconv.Atoi(min)
 		mounts = append(mounts, m)
@@ -126,6 +142,8 @@ type Resolver struct {
 	UUIDOf func(device string) string
 	// RotationalOf reports whether the block device major:minor is a spinning disk.
 	RotationalOf func(major, minor int) bool
+	// RemovableOf reports whether the block device major:minor is removable (USB).
+	RemovableOf func(major, minor int) bool
 }
 
 // NewResolver reads the live mount table.
@@ -139,7 +157,7 @@ func NewResolver() (*Resolver, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Resolver{Mounts: mounts, UUIDOf: uuidFromDisk("/dev/disk/by-uuid"), RotationalOf: sysRotational}, nil
+	return &Resolver{Mounts: mounts, UUIDOf: uuidFromDisk("/dev/disk/by-uuid"), RotationalOf: sysRotational, RemovableOf: sysRemovable}, nil
 }
 
 // Find returns the mount containing abs, which must be an absolute, symlink-free path.
@@ -189,7 +207,7 @@ func (r *Resolver) Resolve(path string) (Volume, string, error) {
 }
 
 func (r *Resolver) volumeFor(m Mount) Volume {
-	v := Volume{Source: m.Source, FSType: m.FSType, MountPoint: m.MountPoint, MountRoot: m.Root}
+	v := Volume{Source: m.Source, FSType: m.FSType, MountPoint: m.MountPoint, MountRoot: m.Root, Options: m.Options}
 	switch {
 	case networkFS[m.FSType]:
 		v.Network = true
@@ -204,6 +222,9 @@ func (r *Resolver) volumeFor(m Mount) Volume {
 			v.Key = "dev:" + m.Source
 		} else {
 			v.Key = "mnt:" + m.FSType + ":" + m.MountPoint
+		}
+		if r.RemovableOf != nil {
+			v.Removable = r.RemovableOf(m.Major, m.Minor)
 		}
 		if r.RotationalOf != nil {
 			v.Rotational = r.RotationalOf(m.Major, m.Minor)
@@ -234,6 +255,24 @@ func uuidFromDisk(dir string) func(string) string {
 		}
 		return ""
 	}
+}
+
+// sysRemovable reports whether a block device sits on USB or is marked removable (SD and
+// other card readers), walking up to the parent disk for partitions.
+func sysRemovable(major, minor int) bool {
+	dev, err := filepath.EvalSymlinks(fmt.Sprintf("/sys/dev/block/%d:%d", major, minor))
+	if err != nil {
+		return false
+	}
+	if strings.Contains(dev, "/usb") {
+		return true
+	}
+	for _, p := range []string{filepath.Join(dev, "removable"), filepath.Join(filepath.Dir(dev), "removable")} {
+		if b, err := os.ReadFile(p); err == nil {
+			return strings.TrimSpace(string(b)) == "1"
+		}
+	}
+	return false
 }
 
 // sysRotational reads queue/rotational for a block device, walking up to the parent disk

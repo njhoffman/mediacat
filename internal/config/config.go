@@ -38,6 +38,9 @@ scan:
   workers: 0
   # Give up on one file after this long (it is retried on the next scan).
   probe_timeout: 2m
+  # Remount removable (USB) drives read-only for scan, check and report-only dupes, and
+  # mount them writable again after, as --readonly does. Busy drives are left alone.
+  readonly_removable: false
   # Directory and file names never scanned (globs). Trash folders are listed so trashed
   # files are never reported as duplicates.
   exclude:
@@ -152,6 +155,8 @@ type Config struct {
 		Workers      int      `yaml:"workers"`
 		ProbeTimeout string   `yaml:"probe_timeout"`
 		Exclude      []string `yaml:"exclude"`
+		// ReadonlyRemovable makes --readonly the default for removable drives.
+		ReadonlyRemovable bool `yaml:"readonly_removable"`
 	} `yaml:"scan"`
 	Check struct {
 		Level   string `yaml:"level"`
@@ -249,6 +254,7 @@ var previousTemplates = map[string]bool{
 	"c539fe87dffa52429da781eba1a4053ee19cd183178403521a204085dd52f47e": true,
 	"d766e507b559093aa6fd2c386315c23ee734c3fd81bb5a3cdb50676af87dd035": true,
 	"f892dd52e2510f21323fc673ad82885cc1e0f09af18d3232e6356aaf9bf5d0bf": true,
+	"e58765dc6b62daa0c51684f59d28812739c719c4dbb5953fffc1666a9d126774": true,
 }
 
 // Status reports what Load did to the file.

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -18,6 +19,7 @@ import (
 
 type checkFlags struct {
 	all, full, recheck, asJSON bool
+	readOnly                   bool
 	kind                       string
 	workers                    int
 }
@@ -55,7 +57,18 @@ Find problems later with: mediacat list --check damaged,unreadable`,
 			if err := a.open(); err != nil {
 				return err
 			}
-			return a.runCheck(dir, cf)
+			explicit := cmd.Flags().Changed("readonly")
+			if cf.all {
+				if explicit && cf.readOnly {
+					return errors.New("--readonly works on one drive; drop --all")
+				}
+				return a.runCheck(dir, cf)
+			}
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			return a.withReadOnly(ctx, dir, cf.readOnly, explicit, func(dir string) error { return a.runCheck(dir, cf) })
 		},
 	}
 	f := cmd.Flags()
@@ -63,6 +76,7 @@ Find problems later with: mediacat list --check damaged,unreadable`,
 	f.BoolVar(&cf.full, "full", a.cfg.Check.Level == catalog.LevelFull, "decode every file completely")
 	f.BoolVar(&cf.recheck, "recheck", false, "check again even files with a current result")
 	f.BoolVar(&cf.asJSON, "json", false, "print the problems found as JSON")
+	f.BoolVar(&cf.readOnly, "readonly", a.cfg.Scan.ReadonlyRemovable, "mount a removable drive read-only for the check, writable again after")
 	f.StringVarP(&cf.kind, "type", "t", "", "only video, audio or image")
 	f.IntVarP(&cf.workers, "workers", "j", a.cfg.Check.Workers, "parallel checks (0: 4, or 2 for --full on network or spinning disks)")
 	return cmd

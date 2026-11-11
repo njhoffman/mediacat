@@ -9,23 +9,7 @@ Categories: feature bug docs test perf
 
 Reviewed: 2026-11-10
 
-## 1. Copying between drives
-
-- [x] **Copy files with no identical copy elsewhere.** (p2) [feature] A
-  command that copies the files under a source path whose content has no
-  copy on a target volume (full hash, as dupes), to a destination laid out
-  by rules (keep the path below the source, or a mapping file), resumable,
-  never overwriting (list name clashes instead), stopping before the
-  target's free space drops under a margin, logged for undo. Done by hand
-  on 2026-11-10 for a USB drive's performer folders (rsync and a plan TSV).
-- [x] **Survive drives that drop out.** (p2) [feature] scan, dupes hashing
-  and actions on a removable drive: on EIO or ENODEV, wait for the device to
-  come back, remount it (read-only when asked), and continue the file, not
-  fail the run; a `--bwlimit` to read gently. A WD USB drive disconnected
-  five times in three hours on 2026-11-10, under scans and copies.
-- [ ] **Mount removable drives read-only for scans.** (p3) [feature] An
-  option (or the default for scan and dupes, which only read) to remount a
-  removable volume read-only first, so a drop-out cannot corrupt it.
+No open items.
 
 ## Completed
 
@@ -83,3 +67,21 @@ Reviewed: 2026-11-10
 - [x] **Show what is in the trash by batch.** (p3) [feature] `trash` lists
   batches (date, command, files, bytes) next to the totals, as `history`
   does, so it is clear what emptying would remove.
+
+### 3. Copying between drives (completed 2026-11-11)
+
+- [x] **Copy files with no identical copy elsewhere.** (p2) [feature] A
+  command that copies the files under a source path whose content has no
+  copy on a target volume (full hash, as dupes), to a destination laid out
+  by rules (keep the path below the source, or a mapping file), resumable,
+  never overwriting (list name clashes instead), stopping before the
+  target's free space drops under a margin, logged for undo. Done by hand
+  on 2026-11-10 for a USB drive's performer folders (rsync and a plan TSV).
+- [x] **Survive drives that drop out.** (p2) [feature] scan, dupes hashing
+  and actions on a removable drive: on EIO or ENODEV, wait for the device to
+  come back, remount it (read-only when asked), and continue the file, not
+  fail the run; a `--bwlimit` to read gently. A WD USB drive disconnected
+  five times in three hours on 2026-11-10, under scans and copies.
+- [x] **Mount removable drives read-only for scans.** (p3) [feature] An
+  option (or the default for scan and dupes, which only read) to remount a
+  removable volume read-only first, so a drop-out cannot corrupt it.

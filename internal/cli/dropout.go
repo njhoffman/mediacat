@@ -40,18 +40,30 @@ func (a *app) awaitGone(ctx context.Context, w *dropout.Waiter, keys []string) (
 		if _, err := w.Await(ctx, k); err != nil {
 			return false, err
 		}
+		if err := a.reapplyReadOnly(ctx, k); err != nil {
+			return false, err
+		}
 		recovered = true
 	}
 	if recovered {
-		res, err := volume.NewResolver()
-		if err != nil {
+		if err := a.refreshMounts(); err != nil {
 			return false, err
-		}
-		if a.lookup == nil {
-			a.res = res
 		}
 	}
 	return recovered, nil
+}
+
+// refreshMounts reads the mount table again (drives remounted or back from a drop-out).
+func (a *app) refreshMounts() error {
+	if a.lookup != nil {
+		return nil // tests fake the mount table
+	}
+	res, err := volume.NewResolver()
+	if err != nil {
+		return err
+	}
+	a.res = res
+	return nil
 }
 
 // setReadLimit applies --bwlimit (bytes per second, e.g. 40M).

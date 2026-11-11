@@ -17,12 +17,12 @@ import (
 	"github.com/njhoffman/mediacat/internal/probe"
 	"github.com/njhoffman/mediacat/internal/scan"
 	"github.com/njhoffman/mediacat/internal/ui"
-	"github.com/njhoffman/mediacat/internal/volume"
 )
 
 func (a *app) scanCmd() *cobra.Command {
 	var o scan.Options
 	var timeout, wait time.Duration
+	var readOnly bool
 	cmd := &cobra.Command{
 		Use:   "scan [path]",
 		Short: "Recursively catalog media files under path (default: current directory)",
@@ -39,6 +39,10 @@ If the drive drops out (unplugged, reset, unmounted), nothing is marked missing 
 broken: the scan waits up to --wait for the drive to come back, at any mount point, and
 scans again (unchanged files are skipped).
 
+--readonly (or scan.readonly_removable in the config) mounts a removable drive read-only
+for the scan, so a drop-out cannot damage its filesystem, and writable again after.
+A drive that is in use is left alone.
+
 Names under scan.exclude in the config (trash and NAS metadata folders by default)
 are always skipped: ` + strings.Join(a.cfg.Scan.Exclude, " "),
 		Args: cobra.MaximumNArgs(1),
@@ -51,7 +55,13 @@ are always skipped: ` + strings.Join(a.cfg.Scan.Exclude, " "),
 				return err
 			}
 			o.BaseExcludes = a.cfg.Scan.Exclude
-			return a.runScan(dir, o, timeout, wait)
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			return a.withReadOnly(ctx, dir, readOnly, cmd.Flags().Changed("readonly"), func(dir string) error {
+				return a.runScan(dir, o, timeout, wait)
+			})
 		},
 	}
 	f := cmd.Flags()
@@ -60,6 +70,7 @@ are always skipped: ` + strings.Join(a.cfg.Scan.Exclude, " "),
 	f.BoolVar(&o.Force, "force", false, "re-probe every file, even unchanged ones")
 	f.StringSliceVar(&o.Excludes, "exclude", nil, "skip files and directories whose name matches this glob (repeatable)")
 	f.DurationVar(&timeout, "probe-timeout", a.cfg.ProbeTimeout, "give up on a single file after this long (retried next scan)")
+	f.BoolVar(&readOnly, "readonly", a.cfg.Scan.ReadonlyRemovable, "mount a removable drive read-only for the scan, writable again after")
 	f.DurationVar(&wait, "wait", defaultWait, "how long to wait for a drive that dropped out to come back (0: stop)")
 	return cmd
 }
@@ -100,11 +111,17 @@ func (a *app) runScan(dir string, o scan.Options, timeout, wait time.Duration) e
 			}
 			return fmt.Errorf("%w; nothing was marked missing. Scan again once it is back", werr)
 		}
+		if err := a.reapplyReadOnly(ctx, v.Key); err != nil {
+			return err
+		}
+		if err := a.refreshMounts(); err != nil {
+			return err
+		}
+		if nv, ok := a.res.Lookup(v.Key); ok && a.lookup == nil {
+			back = nv
+		}
 		dir = dropout.Remap(dir, v.MountPoint, back.MountPoint)
 		v = back
-		if res, rerr := volume.NewResolver(); rerr == nil && a.lookup == nil {
-			a.res = res
-		}
 	}
 }
 

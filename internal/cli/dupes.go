@@ -58,6 +58,8 @@ type dupesFlags struct {
 	summaryBy []string
 	wait      time.Duration
 	bwlimit   string
+	readOnly  bool
+	roSet     bool
 	policy    dupes.Policy // parsed keep policy, for guards
 	stash     map[string]stash.Role
 
@@ -144,7 +146,29 @@ always asks you to type "delete".`,
 			}
 			fl := cmd.Flags()
 			df.depthSet, df.keepSet, df.workersSet = fl.Changed("depth"), fl.Changed("keep"), fl.Changed("workers")
-			return a.runDupes(dir, df)
+			df.roSet = fl.Changed("readonly")
+			kind, err := df.action()
+			if err != nil {
+				return err
+			}
+			acts := kind != "" || df.review || df.applySav
+			if df.readOnly && (acts || df.all) {
+				if df.roSet {
+					return errors.New("--readonly is for reports on one drive: actions need it writable, and --all spans drives")
+				}
+				return a.runDupes(dir, df) // the config default does not apply here
+			}
+			if !df.readOnly {
+				return a.runDupes(dir, df)
+			}
+			if err := a.open(); err != nil {
+				return err
+			}
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			return a.withReadOnly(ctx, dir, true, df.roSet, func(dir string) error { return a.runDupes(dir, df) })
 		},
 	}
 	f := cmd.Flags()
@@ -173,6 +197,7 @@ always asks you to type "delete".`,
 	f.BoolVar(&df.showFiles, "dry-run-files", false, "list every file the action would touch")
 	f.BoolVarP(&df.review, "review", "r", false, "choose the copy to keep and the action per group interactively")
 	f.StringVar(&df.similar, "similar", "", "find similar videos and images: exact, high, medium, low or a distance")
+	f.BoolVar(&df.readOnly, "readonly", a.cfg.Scan.ReadonlyRemovable, "mount a removable drive read-only while reporting, writable again after (not with actions)")
 	f.DurationVar(&df.wait, "wait", defaultWait, "how long to wait for a drive that dropped out to come back (0: stop)")
 	f.StringVar(&df.bwlimit, "bwlimit", "", "cap reading for hashes at this rate per second, e.g. 40M (fragile drives)")
 	f.Lookup("similar").NoOptDefVal = d.Similar

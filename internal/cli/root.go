@@ -16,6 +16,7 @@ import (
 	"github.com/njhoffman/mediacat/internal/catalog"
 	"github.com/njhoffman/mediacat/internal/config"
 	"github.com/njhoffman/mediacat/internal/dupes"
+	"github.com/njhoffman/mediacat/internal/remount"
 	"github.com/njhoffman/mediacat/internal/review"
 	"github.com/njhoffman/mediacat/internal/ui"
 	"github.com/njhoffman/mediacat/internal/volume"
@@ -44,6 +45,9 @@ type app struct {
 	// lookup finds a volume in a fresh mount table, for drop-out detection; tests replace it.
 	lookup   func(key string) (volume.Volume, bool)
 	dropPoll time.Duration // drop-out poll interval; 0 uses the default
+	// mounter remounts drives for --readonly; tests replace it.
+	mounter   remount.Mounter
+	roSession *remount.Session
 
 	cfg        config.Config
 	configPath string

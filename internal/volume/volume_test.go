@@ -43,6 +43,17 @@ func TestParseMountInfo(t *testing.T) {
 	if r.Mounts[5].Root != "/home/nicholas/media" {
 		t.Errorf("bind root = %q", r.Mounts[5].Root)
 	}
+	if m.Options == "" {
+		t.Errorf("mount options not parsed: %+v", m)
+	}
+}
+
+func TestReadOnly(t *testing.T) {
+	for opts, want := range map[string]bool{"ro,nosuid,relatime": true, "rw,relatime": false, "nosuid,ro": true, "errors=remount-ro": false, "": false} {
+		if got := (Volume{Options: opts}).ReadOnly(); got != want {
+			t.Errorf("ReadOnly(%q) = %v", opts, got)
+		}
+	}
 }
 
 func TestParseMountInfoErrors(t *testing.T) {

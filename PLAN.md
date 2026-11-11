@@ -367,8 +367,12 @@ Agreed 2026-11-11 (TODO.md section 1):
   goes with it.
 - Drop-outs: wait (`--wait`, default 10m) for the desktop's automount to bring the same
   UUID back at any mount point, then redo the current file; `--bwlimit` throttles reads.
-- `--readonly` (opt-in) remounts a removable volume read-only via udisksctl for scan,
-  dupes and check, and restores it after.
+- `--readonly` (opt-in; `scan.readonly_removable` for a default) remounts a removable
+  volume (USB sysfs path or `removable`=1) read-only via `udisksctl unmount` + `mount -o
+  ro` for scan, check and report-only dupes, and restores it after (also on Ctrl-C). A
+  busy drive is refused untouched; an already read-only one is left read-only. Explicit
+  `--readonly` errors where it cannot apply (internal drive, actions, --all); the config
+  default is skipped there. After a drop-out the session re-applies read-only.
 
 ## Help, man pages, completion
 
