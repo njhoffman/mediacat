@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -244,6 +246,17 @@ func (a *app) runTrash(dir string, empty, everything bool) error {
 	fmt.Fprintf(a.stdout, "  %-22s %s items, %s\n", "in trash", ui.Count(usage.Items), ui.Bytes(usage.Bytes))
 	fmt.Fprintf(a.stdout, "  %-22s %s files, %s\n", "put there by mediacat", ui.Count(len(ours)), ui.Bytes(ourBytes))
 	fmt.Fprintf(a.stdout, "  %-22s %s\n", "free on drive", ui.Bytes(int64(free)))
+	batches, err := a.trashBatches(ours)
+	if err != nil {
+		return err
+	}
+	if len(batches) > 0 {
+		fmt.Fprintf(a.stdout, "\n  %s\n", ui.Bold.Render("mediacat's batches in this trash, oldest first"))
+		for _, b := range batches {
+			fmt.Fprintf(a.stdout, "  %s  %s  %9s files  %10s  %s\n", ui.Accent.Render(fmt.Sprintf("#%-4d", b.ID)),
+				ui.Dim.Render(b.Started.Format("2006-01-02 15:04")), ui.Count(b.Files), ui.Bytes(b.Bytes), b.Root)
+		}
+	}
 	if !empty {
 		if len(ours) > 0 {
 			fmt.Fprintf(a.stdout, "\n%s\n", ui.Dim.Render("Free that space with: mediacat trash "+ui.Quote(dir)+" --empty"))
@@ -295,6 +308,44 @@ func (a *app) runTrash(dir string, empty, everything bool) error {
 	}
 	fmt.Fprintln(a.stdout, ".")
 	return nil
+}
+
+// trashBatch totals one batch's files still in a trash.
+type trashBatch struct {
+	ID      int64
+	Started time.Time
+	Root    string
+	Files   int
+	Bytes   int64
+}
+
+// trashBatches groups trash actions by batch, oldest first.
+func (a *app) trashBatches(acts []catalog.Action) ([]trashBatch, error) {
+	by := map[int64]*trashBatch{}
+	var order []int64
+	for _, act := range acts {
+		b := by[act.BatchID]
+		if b == nil {
+			info, _, err := a.db.GetBatch(act.BatchID)
+			if err != nil {
+				return nil, err
+			}
+			b = &trashBatch{ID: act.BatchID, Started: act.At}
+			if info != nil {
+				b.Started, b.Root = info.StartedAt, info.Root
+			}
+			by[act.BatchID] = b
+			order = append(order, act.BatchID)
+		}
+		b.Files++
+		b.Bytes += act.Size
+	}
+	sort.Slice(order, func(i, j int) bool { return order[i] < order[j] })
+	out := make([]trashBatch, len(order))
+	for i, id := range order {
+		out[i] = *by[id]
+	}
+	return out, nil
 }
 
 // trashedHere returns mediacat's trash actions whose files are still in loc.

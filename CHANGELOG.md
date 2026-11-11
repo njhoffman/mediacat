@@ -6,6 +6,14 @@ versions follow [semantic versioning](https://semver.org/) and are git tags
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-11
+
+### Added
+
+- `mediacat trash` lists mediacat's batches still in that trash, oldest
+  first, with their date, files, bytes and the directory they came from, so
+  it is clear what emptying would remove.
+
 ## [0.14.0] - 2026-11-11
 
 ### Added

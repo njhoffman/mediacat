@@ -122,6 +122,9 @@ func TestDupesTrashFlow(t *testing.T) {
 	if !strings.Contains(out, "put there by mediacat") || !strings.Contains(out, "2 files") {
 		t.Errorf("trash:\n%s", out)
 	}
+	if !strings.Contains(out, "batches in this trash") || !strings.Contains(out, "#1") || !strings.Contains(out, h.now.Format("2006-01-02 15:04")) || !strings.Contains(out, "  "+h.dir+"\n") {
+		t.Errorf("trash batches:\n%s", out)
+	}
 
 	// The dupes are gone from the listing; undo brings them back.
 	out, _ = h.ok("dupes", h.dir)

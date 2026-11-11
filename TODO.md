@@ -37,7 +37,7 @@ Reviewed: 2026-11-10
   --older-than 7d`: remove batches trashed more than N days ago and keep
   recent ones undoable, so space can be freed without losing the undo for
   today's cleanup.
-- [ ] **Show what is in the trash by batch.** (p3) [feature] `trash` lists
+- [x] **Show what is in the trash by batch.** (p3) [feature] `trash` lists
   batches (date, command, files, bytes) next to the totals, as `history`
   does, so it is clear what emptying would remove.
 
