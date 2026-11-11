@@ -12,7 +12,8 @@ import (
 func TestTemplateIsDefault(t *testing.T) {
 	c := Default()
 	if c.StaleDays != 30 || c.Dupes.Depth != "full" || len(c.Scan.Exclude) != 9 || c.ProbeTimeout.Minutes() != 2 ||
-		strings.Join(c.Dupes.PreferredPaths, " ") != "/Sorted ^/Unsorted ^/Incoming" || !strings.Contains(c.Dupes.Keep, "paths") ||
+		strings.Join(c.Dupes.PreferredPaths, " ") != "/Sorted ^/Unsorted ^/Incoming" || c.Dupes.Keep != "prefer,avoid,paths,stash,plain,oldest,shortest" ||
+		c.Dupes.SimilarKeep != "res,bitrate,prefer,avoid,paths,stash,plain,size,oldest" ||
 		c.List.Columns == "" || c.List.AudioColumns == "" {
 		t.Errorf("defaults: %+v", c)
 	}

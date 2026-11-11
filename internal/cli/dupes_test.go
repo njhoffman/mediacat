@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"database/sql"
 	"encoding/csv"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -301,5 +303,88 @@ func TestDupesKeepAllPreferred(t *testing.T) {
 	if exists(paths[0]) || exists(paths[2]) || !exists(paths[1]) || !exists(second) {
 		t.Errorf("wrong files trashed: original %v, copy(1) %v, backup %v, backup/b2 %v",
 			exists(paths[0]), exists(paths[2]), exists(paths[1]), exists(second))
+	}
+}
+
+// fakeStash writes a Stash config and a database with the part of Stash's schema mediacat
+// reads: primary files belong to scenes, tracked ones are in Stash without a scene.
+func fakeStash(t *testing.T, h *harness, primary, tracked []string) string {
+	t.Helper()
+	dbPath := filepath.Join(filepath.Dir(h.stashCfg), "stash-go.sqlite")
+	os.WriteFile(h.stashCfg, []byte("database: "+dbPath+"\nstash:\n  - path: "+h.dir+"\n"), 0o644)
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	qs := []string{
+		"CREATE TABLE folders (id integer primary key, path varchar(255))",
+		"CREATE TABLE files (id integer primary key, basename varchar(255), zip_file_id integer, parent_folder_id integer, size integer, mod_time datetime)",
+		"CREATE TABLE video_files (file_id integer primary key, duration float)",
+		"CREATE TABLE files_fingerprints (file_id integer, type varchar(255), fingerprint blob)",
+		`CREATE TABLE scenes_files (scene_id integer, file_id integer, "primary" boolean)`,
+		`CREATE TABLE images_files (image_id integer, file_id integer, "primary" boolean)`,
+	}
+	folders := map[string]int{}
+	id := 0
+	for _, list := range [][]string{primary, tracked} {
+		for _, p := range list {
+			dir := filepath.Dir(p)
+			if folders[dir] == 0 {
+				folders[dir] = len(folders) + 1
+				qs = append(qs, fmt.Sprintf("INSERT INTO folders VALUES (%d, '%s')", folders[dir], dir))
+			}
+			id++
+			qs = append(qs, fmt.Sprintf("INSERT INTO files VALUES (%d, '%s', NULL, %d, 1, '2025-01-02T03:04:05Z')", id, filepath.Base(p), folders[dir]))
+			if len(primary) > 0 && id <= len(primary) {
+				qs = append(qs, fmt.Sprintf("INSERT INTO scenes_files VALUES (%d, %d, 1)", id, id))
+			}
+		}
+	}
+	for _, q := range qs {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	return dbPath
+}
+
+func TestDupesStash(t *testing.T) {
+	h, paths := dupeFixture(t)
+	dbPath := fakeStash(t, h, []string{paths[2]}, []string{paths[1]})
+
+	// The stash rule keeps the scene's file, though it has a copy marker and is newest.
+	out, _ := h.ok("dupes", h.dir)
+	keepLine := ""
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, "keep ") {
+			keepLine = l
+		}
+	}
+	if !strings.HasSuffix(keepLine, paths[2]) {
+		t.Errorf("keeper should be Stash's primary file:\n%s", out)
+	}
+
+	// Rules without stash keep another copy, but the guard spares the primary file.
+	out, _ = h.ok("dupes", h.dir, "--keep", "oldest", "--trash")
+	if !strings.Contains(out, "DRY RUN: 1 files") || !strings.Contains(out, "1 other copies") || !strings.Contains(out, "Stash's primary file") {
+		t.Errorf("guard:\n%s", out)
+	}
+	h.ok("dupes", h.dir, "--keep", "oldest", "--trash", "--execute", "--yes")
+	if !exists(paths[0]) || exists(paths[1]) || !exists(paths[2]) {
+		t.Fatalf("wrong files trashed: %v %v %v", exists(paths[0]), exists(paths[1]), exists(paths[2]))
+	}
+	h.ok("undo", "1", "--yes")
+
+	// A database that cannot be read stops actions but not reports.
+	os.WriteFile(dbPath, []byte("not a database"), 0o644)
+	if _, errs, code := h.run("dupes", h.dir, "--trash"); code != 1 || !strings.Contains(errs, "cannot read Stash's database") {
+		t.Errorf("unreadable database with an action: %d %s", code, errs)
+	}
+	if out, errs := h.ok("dupes", h.dir); !strings.Contains(errs, "not using Stash's database") || !strings.Contains(out, "2 extra copies") {
+		t.Errorf("unreadable database, report:\n%s\n%s", out, errs)
+	}
+	if out, _ := h.ok("--stash-config", "", "dupes", h.dir, "--trash"); !strings.Contains(out, "DRY RUN: 2 files") {
+		t.Errorf("acting without Stash:\n%s", out)
 	}
 }

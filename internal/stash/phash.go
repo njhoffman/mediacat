@@ -59,8 +59,7 @@ func PHashes(dbPath string) (map[string]Fingerprint, error) {
 	if _, err := os.Stat(dbPath); err != nil {
 		return nil, err
 	}
-	dsn := (&url.URL{Scheme: "file", Path: dbPath, RawQuery: "mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)"}).String()
-	db, err := sql.Open("sqlite", dsn)
+	db, err := openReadOnly(dbPath)
 	if err != nil {
 		return nil, err
 	}
@@ -90,4 +89,10 @@ func PHashes(dbPath string) (map[string]Fingerprint, error) {
 		out[filepath.Join(dir, base)] = fp
 	}
 	return out, rows.Err()
+}
+
+// openReadOnly opens Stash's database so that nothing can write to it.
+func openReadOnly(dbPath string) (*sql.DB, error) {
+	dsn := (&url.URL{Scheme: "file", Path: dbPath, RawQuery: "mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)"}).String()
+	return sql.Open("sqlite", dsn)
 }

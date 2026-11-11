@@ -143,3 +143,19 @@ func TestPreferredPath(t *testing.T) {
 		}
 	}
 }
+
+func TestStashRule(t *testing.T) {
+	files := []catalog.File{{AbsPath: "/lib/Sorted/a.mp4"}, {AbsPath: "/lib/Sorted/b.mp4"}, {AbsPath: "/lib/Sorted/c.mp4"}}
+	p, err := ParsePolicy(DefaultPolicy, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Choose(files); got != 0 {
+		t.Errorf("without Stash the rule decides nothing: kept %d", got)
+	}
+	rank := map[string]int{"/lib/Sorted/a.mp4": 2, "/lib/Sorted/b.mp4": 1, "/lib/Sorted/c.mp4": 0}
+	p.StashRank = func(path string) int { return rank[path] }
+	if got := p.Choose(files); got != 2 {
+		t.Errorf("the primary file should be kept, got %d", got)
+	}
+}

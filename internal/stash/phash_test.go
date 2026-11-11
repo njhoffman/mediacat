@@ -21,9 +21,14 @@ func fakeDB(t *testing.T, path string) {
 		"CREATE TABLE files (id integer primary key, basename varchar(255), zip_file_id integer, parent_folder_id integer, size integer, mod_time datetime)",
 		"CREATE TABLE video_files (file_id integer primary key, duration float)",
 		"CREATE TABLE files_fingerprints (file_id integer, type varchar(255), fingerprint blob)",
+		"CREATE TABLE scenes_files (scene_id integer, file_id integer, \"primary\" boolean)",
+		"CREATE TABLE images_files (image_id integer, file_id integer, \"primary\" boolean)",
 		"INSERT INTO folders VALUES (1, '/lib/Sorted'), (2, '/lib/Sorted/a b')",
 		"INSERT INTO files VALUES (1, 'x.mp4', NULL, 1, 100, '2024-08-20T14:14:36-05:00'), (2, 'y.mp4', NULL, 2, 200, '2025-01-02T03:04:05Z'), (3, 'pic.jpg', NULL, 1, 5, '2025-01-02T03:04:05Z'), (4, 'z.mp4', NULL, 1, 7, '2025-01-02T03:04:05Z')",
 		"INSERT INTO video_files VALUES (1, 10.5), (2, 20), (4, 3)",
+		"INSERT INTO scenes_files VALUES (1, 1, 1), (1, 4, 0)",
+		"INSERT INTO images_files VALUES (1, 3, 1)",
+		"INSERT INTO files VALUES (5, 'in.mp4', 4, 1, 1, '2025-01-02T03:04:05Z')",
 		"INSERT INTO files_fingerprints VALUES (1, 'phash', -6659840245270445659), (2, 'phash', 42), (3, 'phash', 9), (1, 'oshash', 'abc'), (4, 'md5', 'x')",
 	} {
 		if _, err := db.Exec(q); err != nil {
@@ -79,5 +84,36 @@ func TestDatabase(t *testing.T) {
 	}
 	if got, err := Database(filepath.Join(dir, "none.yml")); got != "" || err != nil {
 		t.Errorf("missing config: %q %v", got, err)
+	}
+}
+
+func TestFiles(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "stash-go.sqlite")
+	fakeDB(t, dbPath)
+	before, _ := os.ReadFile(dbPath)
+	got, err := Files(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]Role{
+		"/lib/Sorted/x.mp4":     Primary, // a scene's primary file
+		"/lib/Sorted/z.mp4":     Tracked, // a scene's second file
+		"/lib/Sorted/pic.jpg":   Primary, // an image's file
+		"/lib/Sorted/a b/y.mp4": Tracked, // no scene
+	}
+	if len(got) != len(want) {
+		t.Errorf("files: %v", got)
+	}
+	for p, r := range want {
+		if got[p] != r {
+			t.Errorf("%s: role %d, want %d", p, got[p], r)
+		}
+	}
+	if after, _ := os.ReadFile(dbPath); string(after) != string(before) {
+		t.Error("the Stash database was modified")
+	}
+	if _, err := Files(filepath.Join(dir, "none.sqlite")); err == nil {
+		t.Error("missing database should fail")
 	}
 }

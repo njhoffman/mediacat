@@ -55,6 +55,7 @@ type dupesFlags struct {
 	onlyUnder []string
 	keepPref  bool
 	policy    dupes.Policy // parsed keep policy, for guards
+	stash     map[string]stash.Role
 
 	// Whether these flags were given, so --similar can pick its own defaults.
 	depthSet, keepSet, workersSet bool
@@ -100,6 +101,10 @@ go; applying asks for the same confirmations as below.
 --only-under DIR limits trash, move and delete to copies below DIR (repeatable): other
 copies are never touched, whichever copy the keep rules choose, e.g. clean up Incoming
 and Unsorted without touching Sorted.
+
+With a Stash install (--stash-config), the "stash" rule keeps the file Stash uses, and a
+scene's or image's primary file is never trashed, moved or deleted, whichever copy is
+kept: such copies are listed as left in place.
 
 --keep-all-preferred keeps every copy whose path matches a preferred path pattern (and no
 avoided one) and acts only on the rest: with the default patterns, every copy under
@@ -272,7 +277,25 @@ func (a *app) runDupes(dir string, df dupesFlags) error {
 	if df.keepPref && len(policy.PathPrefer) == 0 {
 		return errors.New("--keep-all-preferred needs preferred path patterns (dupes.preferred_paths or --prefer-path)")
 	}
-	df.policy = policy
+	roles, err := a.stashRoles()
+	if err != nil {
+		if kind != "" || df.review {
+			return fmt.Errorf("cannot read Stash's database, which is needed to protect the files its scenes use: %w (--stash-config \"\" acts without Stash)", err)
+		}
+		a.warn("not using Stash's database: " + err.Error())
+	}
+	if roles != nil {
+		policy.StashRank = func(path string) int {
+			switch roles[path] {
+			case stash.Primary:
+				return 0
+			case stash.Tracked:
+				return 1
+			}
+			return 2
+		}
+	}
+	df.policy, df.stash = policy, roles
 	if err := a.open(); err != nil {
 		return err
 	}
@@ -727,7 +750,33 @@ func (df dupesFlags) guard() actions.Guard {
 			return ""
 		}
 	}
-	return actions.Guards(actions.OnlyUnder(df.onlyUnder), keepPref)
+	var stashPrimary actions.Guard
+	if df.stash != nil {
+		roles := df.stash
+		stashPrimary = func(f catalog.File) string {
+			if roles[f.AbsPath] == stash.Primary {
+				return "Stash's primary file for a scene or image"
+			}
+			return ""
+		}
+	}
+	return actions.Guards(stashPrimary, actions.OnlyUnder(df.onlyUnder), keepPref)
+}
+
+// stashRoles reads which files Stash tracks and which are its scenes' and images' primary
+// files. Without a Stash config or database it returns nothing.
+func (a *app) stashRoles() (map[string]stash.Role, error) {
+	if a.stashCfg == "" {
+		return nil, nil
+	}
+	db, err := stash.Database(a.stashCfg)
+	if err != nil || db == "" {
+		return nil, err
+	}
+	if _, err := os.Stat(db); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return stash.Files(db)
 }
 
 // protectedLines tells how many copies each guard spared, by reason.

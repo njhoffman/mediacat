@@ -14,6 +14,7 @@ var Rules = map[string]string{
 	"prefer":   "keep copies under a --prefer directory (earlier directories win)",
 	"avoid":    "keep copies outside --avoid directories",
 	"paths":    `keep copies whose path contains a preferred pattern; "^pattern" avoids it (case-sensitive)`,
+	"stash":    "keep the file Stash uses: a scene's or image's primary file, then any file Stash tracks",
 	"plain":    `keep names without copy markers like "(1)", " - Copy", "_2"`,
 	"oldest":   "keep the oldest modification time",
 	"newest":   "keep the newest modification time",
@@ -25,11 +26,11 @@ var Rules = map[string]string{
 }
 
 // DefaultPolicy is used when no --keep is given.
-const DefaultPolicy = "prefer,avoid,paths,plain,oldest,shortest"
+const DefaultPolicy = "prefer,avoid,paths,stash,plain,oldest,shortest"
 
 // DefaultSimilarPolicy is used for similar (not identical) groups when no --keep is
 // given: the copies differ, so quality comes first.
-const DefaultSimilarPolicy = "res,bitrate,prefer,avoid,paths,plain,size,oldest"
+const DefaultSimilarPolicy = "res,bitrate,prefer,avoid,paths,stash,plain,size,oldest"
 
 // Policy chooses which copy in a group to keep.
 type Policy struct {
@@ -40,6 +41,10 @@ type Policy struct {
 	// and ones to avoid (written with a leading "^").
 	PathPrefer []string
 	PathAvoid  []string
+	// StashRank ranks a path for the "stash" rule, lower is better (0 a primary file, 1
+	// tracked, 2 untracked). Nil when Stash's database is not available: the rule then
+	// decides nothing.
+	StashRank func(path string) int
 }
 
 // SetPathPatterns parses preferred-path patterns such as ["/Sorted", "^/Incoming"]. They
@@ -121,6 +126,11 @@ func (p Policy) score(rule string, f catalog.File) int64 {
 		return 0
 	case "paths":
 		return p.pathScore(f.AbsPath)
+	case "stash":
+		if p.StashRank == nil {
+			return 0
+		}
+		return int64(p.StashRank(f.AbsPath))
 	case "plain":
 		return int64(copyMarkers(f.AbsPath))
 	case "oldest":

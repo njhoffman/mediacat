@@ -6,6 +6,24 @@ versions follow [semantic versioning](https://semver.org/) and are git tags
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-11
+
+### Added
+
+- `stash` keep rule: keeps the file Stash uses, a scene's or image's primary
+  file first, then any file Stash tracks (read-only from Stash's database).
+- A scene's or image's primary file in Stash is never trashed, moved or
+  deleted, whichever copy the keep rules choose; the summary lists such
+  copies as left in place. When Stash's database exists but cannot be read,
+  actions stop (`--stash-config ""` acts without Stash); reports only warn.
+
+### Changed
+
+- The default keep rules include `stash` after `paths`
+  (`prefer,avoid,paths,stash,plain,oldest,shortest`, and for similar groups
+  `res,bitrate,prefer,avoid,paths,stash,plain,size,oldest`). Unedited configs
+  upgrade to the new template.
+
 ## [0.10.0] - 2026-11-11
 
 ### Added

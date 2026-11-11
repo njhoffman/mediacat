@@ -35,7 +35,7 @@ not be expressed with flags, so 434 decisions were written into
   `--only-under DIR` (repeatable): trash, move or delete only copies below
   DIR, never others, whatever the keep rules choose. A guard for "clean up
   Incoming and Unsorted, never touch Sorted".
-- [ ] **Stash-aware keep rule.** (p2) [feature] A `stash` keep rule that
+- [x] **Stash-aware keep rule.** (p2) [feature] A `stash` keep rule that
   prefers the copy Stash tracks, and above all a scene's primary file, read
   from the Stash database `stash_config` already points at; with a guard
   that never trashes a scene's primary file. In the cleanup, 79 groups had

@@ -62,8 +62,10 @@ dupes:
   # size, partial or full. Only full can trash, move or delete.
   depth: full
   # Rules choosing the copy to keep, in order:
-  # prefer, avoid, paths, plain, oldest, newest, shortest, longest, res, bitrate, size
-  keep: prefer,avoid,paths,plain,oldest,shortest
+  # prefer, avoid, paths, stash, plain, oldest, newest, shortest, longest, res, bitrate,
+  # size. "stash" keeps the file Stash uses (a scene's primary file first); a scene's
+  # primary file is never trashed, moved or deleted whatever the rules choose.
+  keep: prefer,avoid,paths,stash,plain,oldest,shortest
   # Keep copies under these directories (first wins) / avoid keeping copies under these.
   prefer: []
   avoid: []
@@ -88,7 +90,7 @@ dupes:
   # phash bits different), or a number of bits.
   similar: high
   # Keep rules for similar groups. The copies differ, so quality comes first.
-  similar_keep: res,bitrate,prefer,avoid,paths,plain,size,oldest
+  similar_keep: res,bitrate,prefer,avoid,paths,stash,plain,size,oldest
   # Videos are compared only when their durations differ by at most this percentage of
   # the longer one, or similar_duration_min, whichever is larger.
   similar_duration: 5
@@ -246,6 +248,7 @@ var previousTemplates = map[string]bool{
 	"619f4449a73fbc916ace72615830b6c9cfc0e5ece35f4820080542f9e9ea4af5": true,
 	"c539fe87dffa52429da781eba1a4053ee19cd183178403521a204085dd52f47e": true,
 	"d766e507b559093aa6fd2c386315c23ee734c3fd81bb5a3cdb50676af87dd035": true,
+	"f892dd52e2510f21323fc673ad82885cc1e0f09af18d3232e6356aaf9bf5d0bf": true,
 }
 
 // Status reports what Load did to the file.
