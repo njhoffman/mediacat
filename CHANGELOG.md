@@ -1,0 +1,84 @@
+# Changelog
+
+All notable changes to mediacat. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
+versions follow [semantic versioning](https://semver.org/) and are git tags
+(`just release patch|minor|major`).
+
+## [Unreleased]
+
+### Added
+
+- `TODO.md` with the work found while cleaning up a Stash library on
+  2026-11-10: acting on chosen duplicate groups without the review screen,
+  copying unique files between drives, drives that drop out, and scripted
+  trash emptying.
+
+## [0.7.0] - 2026-10-19
+
+### Changed
+
+- Preferred paths are case-sensitive, and the defaults are `/Sorted`,
+  `^/Unsorted` and `^/Incoming`: a copy under `/Sorted` is kept, copies
+  under `/Unsorted` or `/Incoming` are avoided, and an avoided match still
+  outweighs a preferred one (`Sorted/x/Incoming` loses to an unmatched path
+  but beats `Unsorted`). Unedited configs upgrade to the new template.
+- `just release` also pushes the branch and the tag.
+
+## [0.6.1] - 2026-10-19
+
+### Fixed
+
+- `goimagehash` and `imaging` are listed as direct dependencies in
+  `go.mod`, so `go mod tidy` leaves them alone.
+
+## [0.6.0] - 2026-10-19
+
+### Added
+
+- bpp (video bits per pixel per frame): a list field and column,
+  `--min-bpp` / `--max-bpp`, an info row, JSON, and highlighting from 0.15
+  to 0.4, to spot heavy encodes at any resolution.
+- `--version` shows the git tag; `just release patch|minor|major` tags,
+  rebuilds and links `~/.local/bin/mediacat` to the repo binary.
+
+### Fixed
+
+- Video phashes are sampled over the video stream's duration when the
+  container's would put frames past the picture (audio longer than video).
+  Every file Stash can hash still gets Stash's exact hash.
+- ffprobe's MPEG-1/2 variable-bitrate marker (104857200) is no longer stored
+  as a video bitrate; affected rows are re-derived from the stored ffprobe
+  JSON.
+
+## [0.5.0] - 2026-10-19
+
+The first release: plan phases 1 to 5.
+
+### Added
+
+- `scan`: recursive, resumable cataloging into a SQLite catalog keyed by
+  volume identity, with change and rename detection, ffprobe, tag and image
+  metadata, average stream bitrates, and progress display. `list` and
+  `info` with filters and a multi-key sort on every field, `--columns`, and
+  yellow-to-red highlighting of large sizes, durations, resolutions and
+  bitrates; a dashboard on bare `mediacat`; staleness warnings.
+- `dupes`: tiered duplicate detection (size, sampled partial hash, full
+  xxh3 hash) with hashes cached so interrupted runs resume; keep rules
+  (prefer, avoid, preferred paths, plain names, age, path length,
+  resolution, bitrate, size); trash on the files' own drive, move, or
+  delete, as dry runs unless `--execute`, never overwriting and re-checking
+  each file first; `history` and `undo`; `trash` to inspect and empty what
+  mediacat trashed; reminders to run Stash's Clean.
+- `dupes --review`: a full-screen list of the groups to choose the copy to
+  keep and trash, move, delete or leave each, saving choices as they are
+  made.
+- `check`: integrity checks, quick (first frame and the data near the end)
+  or `--full` (decode everything), stored per file and resumable; a list
+  `--check` filter, a duplicate marker column and `--duplicates`.
+- `dupes --similar`: perceptual duplicates of videos and images, with
+  Stash's exact phash algorithm (Stash's stored phashes reused when path,
+  size and modification time match), levels from exact to low, a duration
+  window for videos, and their own keep rules; `--delete` only through
+  `--review`.
+- `~/.config/mediacat.yaml` with commented defaults, created on first run,
+  and upgraded automatically when unedited.
