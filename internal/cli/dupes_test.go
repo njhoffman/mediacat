@@ -273,3 +273,33 @@ func TestDupesOnlyUnder(t *testing.T) {
 		t.Fatalf("execute:\n%s", out)
 	}
 }
+
+func TestDupesKeepAllPreferred(t *testing.T) {
+	h, paths := dupeFixture(t)
+	b, _ := os.ReadFile(paths[0])
+	second := filepath.Join(h.dir, "backup", "b2", "clip.mp4")
+	os.MkdirAll(filepath.Dir(second), 0o755)
+	os.WriteFile(second, b, 0o644)
+	h.ok("scan", h.dir)
+
+	if _, errs, code := h.run("dupes", h.dir, "--keep-all-preferred"); code != 1 || !strings.Contains(errs, "limits an action") {
+		t.Errorf("without an action: %d %s", code, errs)
+	}
+	if _, errs, code := h.run("dupes", h.dir, "--trash", "--keep-all-preferred", "--prefer-path", ""); code != 1 || !strings.Contains(errs, "needs preferred path patterns") {
+		t.Errorf("no patterns: %d %s", code, errs)
+	}
+	out, _ := h.ok("dupes", h.dir, "--trash", "--keep-all-preferred", "--prefer-path", "/backup/")
+	if !strings.Contains(out, "DRY RUN: 2 files") || !strings.Contains(out, "1 other copies") || !strings.Contains(out, "--keep-all-preferred") {
+		t.Errorf("dry run:\n%s", out)
+	}
+	// Combined with --only-under, both guards apply.
+	out, _ = h.ok("dupes", h.dir, "--trash", "--keep-all-preferred", "--prefer-path", "/backup/", "--only-under", filepath.Join(h.dir, "nowhere"))
+	if !strings.Contains(out, "Nothing to do") || !strings.Contains(out, "outside --only-under") {
+		t.Errorf("both guards:\n%s", out)
+	}
+	h.ok("dupes", h.dir, "--trash", "--keep-all-preferred", "--prefer-path", "/backup/", "--execute", "--yes")
+	if exists(paths[0]) || exists(paths[2]) || !exists(paths[1]) || !exists(second) {
+		t.Errorf("wrong files trashed: original %v, copy(1) %v, backup %v, backup/b2 %v",
+			exists(paths[0]), exists(paths[2]), exists(paths[1]), exists(second))
+	}
+}

@@ -36,8 +36,8 @@ type Policy struct {
 	Rules  []string
 	Prefer []string // absolute directories
 	Avoid  []string
-	// Path patterns for the "paths" rule, lowercased: substrings to prefer, and ones to
-	// avoid (written with a leading "^").
+	// Path patterns for the "paths" rule, matched case-sensitively: substrings to prefer,
+	// and ones to avoid (written with a leading "^").
 	PathPrefer []string
 	PathAvoid  []string
 }
@@ -182,4 +182,20 @@ func (p Policy) pathScore(path string) int64 {
 		}
 	}
 	return score
+}
+
+// PreferredPath reports whether path contains a preferred pattern and no avoided one, as
+// "/Sorted/a.mp4" does with the default patterns but "/Sorted/x/Incoming/a.mp4" does not.
+func (p Policy) PreferredPath(path string) bool {
+	for _, pat := range p.PathAvoid {
+		if strings.Contains(path, pat) {
+			return false
+		}
+	}
+	for _, pat := range p.PathPrefer {
+		if strings.Contains(path, pat) {
+			return true
+		}
+	}
+	return false
 }

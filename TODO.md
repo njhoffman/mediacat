@@ -16,11 +16,12 @@ copies outside Sorted, and inside Sorted keep the file Stash uses") could
 not be expressed with flags, so 434 decisions were written into
 `review_decisions` by hand and applied through `--review`.
 
-- [ ] **Leave groups where several copies match the preferred paths.** (p1)
-  [feature] A `--skip-ambiguous` flag (or a `paths` rule mode) that leaves a
-  group untouched when two or more copies match `preferred_paths`, instead
-  of letting later rules pick one. With it, `dupes --trash` would have done
-  the "only copies outside Sorted" pass directly.
+- [x] **Keep every copy that matches the preferred paths.** (p1)
+  [feature] `--keep-all-preferred` keeps all copies matching
+  `preferred_paths` (and no avoided pattern) and acts on the rest, instead
+  of letting later rules pick one. Chosen over leaving such groups
+  untouched, which would also have kept their Incoming copies. With it,
+  `dupes --trash` does the "only copies outside Sorted" pass directly.
 - [ ] **Apply saved review decisions without the review screen.** (p1)
   [feature] `dupes --review --apply-saved` (or `dupes --apply-decisions`):
   apply the saved choices for the groups found, with the same summary and
@@ -44,7 +45,7 @@ not be expressed with flags, so 434 decisions were written into
   others outside", "2+ copies in Sorted", "none in Sorted") with bytes, so
   a cleanup can be planned before choosing an action. This took a custom
   script over `--export` JSON.
-- [ ] **Stale "lowercased" comment on path patterns.** (p3) [docs]
+- [x] **Stale "lowercased" comment on path patterns.** (p3) [docs]
   `internal/dupes/policy.go` `Policy.PathPrefer` still says the patterns
   are lowercased, but since d9674b3 they match case-sensitively; fix the
   comment so nobody reintroduces lowercasing.

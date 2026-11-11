@@ -6,6 +6,15 @@ versions follow [semantic versioning](https://semver.org/) and are git tags
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-11
+
+### Added
+
+- `dupes --keep-all-preferred`: keep every copy whose path matches a
+  preferred pattern (`dupes.preferred_paths` / `--prefer-path`, without an
+  avoided one) and act only on the rest, so a group with two copies in
+  `/Sorted` loses only its copies elsewhere. Combines with `--only-under`.
+
 ## [0.9.0] - 2026-11-11
 
 ### Added

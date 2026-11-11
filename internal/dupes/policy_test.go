@@ -125,3 +125,21 @@ func TestPathsRule(t *testing.T) {
 		t.Error("empty pattern accepted")
 	}
 }
+
+func TestPreferredPath(t *testing.T) {
+	var p Policy
+	if err := p.SetPathPatterns([]string{"/Sorted", "^/Unsorted", "^/Incoming"}); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]bool{
+		"/lib/Sorted/a.mp4":            true,
+		"/lib/Sorted/x/Incoming/a.mp4": false,
+		"/lib/Incoming/a.mp4":          false,
+		"/lib/sorted/a.mp4":            false,
+		"/lib/Other/a.mp4":             false,
+	} {
+		if got := p.PreferredPath(path); got != want {
+			t.Errorf("PreferredPath(%s) = %v, want %v", path, got, want)
+		}
+	}
+}

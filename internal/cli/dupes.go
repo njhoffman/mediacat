@@ -53,6 +53,8 @@ type dupesFlags struct {
 	review    bool
 	similar   string
 	onlyUnder []string
+	keepPref  bool
+	policy    dupes.Policy // parsed keep policy, for guards
 
 	// Whether these flags were given, so --similar can pick its own defaults.
 	depthSet, keepSet, workersSet bool
@@ -99,6 +101,10 @@ go; applying asks for the same confirmations as below.
 copies are never touched, whichever copy the keep rules choose, e.g. clean up Incoming
 and Unsorted without touching Sorted.
 
+--keep-all-preferred keeps every copy whose path matches a preferred path pattern (and no
+avoided one) and acts only on the rest: with the default patterns, every copy under
+/Sorted stays and copies elsewhere go, even when a group has several in /Sorted.
+
 Actions are a dry run unless --execute is given. --trash only uses the trash on the
 files' own drive; --move-to keeps the layout below path; --delete is permanent and
 always asks you to type "delete".`,
@@ -106,6 +112,7 @@ always asks you to type "delete".`,
   mediacat dupes /mnt/nfs/Stash --prefer /mnt/nfs/Stash/Sorted --trash
   mediacat dupes /mnt/nfs/Stash --review
   mediacat dupes /mnt/nfs/Stash --trash --only-under /mnt/nfs/Stash/Incoming
+  mediacat dupes /mnt/nfs/Stash --trash --keep-all-preferred
   mediacat dupes /mnt/nfs/Stash --similar --review
   mediacat dupes ~/Pictures --similar=medium --type image
   mediacat dupes --trash --execute
@@ -136,6 +143,7 @@ always asks you to type "delete".`,
 	f.BoolVar(&df.del, "delete", false, "permanently delete extra copies")
 	f.StringVar(&df.moveTo, "move-to", "", "move extra copies under this directory")
 	f.StringSliceVar(&df.onlyUnder, "only-under", nil, "only trash, move or delete copies below this directory (repeatable)")
+	f.BoolVar(&df.keepPref, "keep-all-preferred", false, "keep every copy matching a preferred path (--prefer-path), act on the rest")
 	f.BoolVar(&df.execute, "execute", false, "apply the action (otherwise a dry run)")
 	f.BoolVarP(&df.yes, "yes", "y", false, "skip the confirmation for --trash and --move-to (never for --delete)")
 	f.BoolVar(&df.asJSON, "json", false, "print groups as JSON")
@@ -251,6 +259,9 @@ func (a *app) runDupes(dir string, df dupesFlags) error {
 	if df.onlyUnder, err = absDirs(df.onlyUnder); err != nil {
 		return err
 	}
+	if df.keepPref && kind == "" && !df.review {
+		return errors.New("--keep-all-preferred limits an action: add --trash, --move-to DIR or --delete, or use --review")
+	}
 	policy, err := dupes.ParsePolicy(df.keep, prefer, avoid)
 	if err != nil {
 		return err
@@ -258,6 +269,10 @@ func (a *app) runDupes(dir string, df dupesFlags) error {
 	if err := policy.SetPathPatterns(df.paths); err != nil {
 		return err
 	}
+	if df.keepPref && len(policy.PathPrefer) == 0 {
+		return errors.New("--keep-all-preferred needs preferred path patterns (dupes.preferred_paths or --prefer-path)")
+	}
+	df.policy = policy
 	if err := a.open(); err != nil {
 		return err
 	}
@@ -549,7 +564,7 @@ func (a *app) act(ctx context.Context, kind, root string, df dupesFlags, groups 
 		}
 		moveTo = abs
 	}
-	plan, err := actions.BuildPlan(kind, root, moveTo, groups, vols, actions.OnlyUnder(df.onlyUnder))
+	plan, err := actions.BuildPlan(kind, root, moveTo, groups, vols, df.guard())
 	if err != nil {
 		return false, err
 	}
@@ -698,6 +713,21 @@ func (a *app) describePlan(p actions.Plan, trasher *actions.Trasher) (int, []str
 		lines = append(lines, fmt.Sprintf("One copy of each of the %s groups is kept. Undo with mediacat undo.", ui.Count(countGroups(p))))
 		return ui.LevelWarn, lines, nil
 	}
+}
+
+// guard combines the guards the flags ask for.
+func (df dupesFlags) guard() actions.Guard {
+	var keepPref actions.Guard
+	if df.keepPref {
+		pol := df.policy
+		keepPref = func(f catalog.File) string {
+			if pol.PreferredPath(f.AbsPath) {
+				return "matching a preferred path (--keep-all-preferred)"
+			}
+			return ""
+		}
+	}
+	return actions.Guards(actions.OnlyUnder(df.onlyUnder), keepPref)
 }
 
 // protectedLines tells how many copies each guard spared, by reason.
