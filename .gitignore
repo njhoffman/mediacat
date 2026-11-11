@@ -1,3 +1,4 @@
 /mediacat
 *.db
 *.db-*
+internal/cli/copytest-*

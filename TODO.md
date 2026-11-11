@@ -11,7 +11,7 @@ Reviewed: 2026-11-10
 
 ## 1. Copying between drives
 
-- [ ] **Copy files with no identical copy elsewhere.** (p2) [feature] A
+- [x] **Copy files with no identical copy elsewhere.** (p2) [feature] A
   command that copies the files under a source path whose content has no
   copy on a target volume (full hash, as dupes), to a destination laid out
   by rules (keep the path below the source, or a mapping file), resumable,

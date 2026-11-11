@@ -888,6 +888,7 @@ const (
 	ActionTrash  = "trash"
 	ActionDelete = "delete"
 	ActionMove   = "move"
+	ActionCopy   = "copy" // a copy made by mediacat copy; the action's file is the new copy
 )
 
 // Action statuses.
@@ -1049,9 +1050,38 @@ func (c *DB) GetBatch(id int64) (*Batch, []Action, error) {
 	return &b, acts, rows.Err()
 }
 
-// MarkActionUndone records that one action was reverted and restores the file's catalog
-// row when it still exists.
-func (c *DB) MarkActionUndone(a Action) error {
+// RecordCopy logs a copy action and, when it completed, catalogs the new file: dest carries
+// the source's metadata with the copy's volume, path and inode, and fullHash is stored as
+// valid for its size and modification time, so later searches know the copy without
+// hashing it again.
+func (c *DB) RecordCopy(a Action, dest File, fullHash string) error {
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO actions (batch_id, volume_key, relpath, source_path, size, full_hash, keeper_path,
+			dest_path, info_path, status, error, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.BatchID, a.VolumeKey, a.RelPath, a.SourcePath, a.Size, a.FullHash, a.KeeperPath,
+		a.DestPath, a.InfoPath, a.Status, a.Error, a.At.Unix()); err != nil {
+		return err
+	}
+	if a.Status == ActionDone {
+		t := &Tx{tx: tx}
+		if err := t.PutFile(dest); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE files SET full_hash = ?, hash_size = ?, hash_mtime_ns = ? WHERE volume_id = ? AND relpath = ?`,
+			fullHash, dest.Size, dest.MtimeNS, dest.VolumeID, dest.RelPath); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// MarkActionUndone records that one action of a batch of the given kind was reverted. It
+// restores the file's catalog row when it still exists, or for a copy forgets the copy.
+func (c *DB) MarkActionUndone(a Action, kind string) error {
 	tx, err := c.db.Begin()
 	if err != nil {
 		return err
@@ -1059,6 +1089,13 @@ func (c *DB) MarkActionUndone(a Action) error {
 	defer tx.Rollback()
 	if _, err := tx.Exec(`UPDATE actions SET status = ? WHERE id = ?`, ActionUndone, a.ID); err != nil {
 		return err
+	}
+	if kind == ActionCopy {
+		// An undone copy is gone: forget its catalog row.
+		if _, err := tx.Exec(`DELETE FROM files WHERE relpath = ? AND volume_id = (SELECT id FROM volumes WHERE key = ?)`, a.RelPath, a.VolumeKey); err != nil {
+			return err
+		}
+		return tx.Commit()
 	}
 	if _, err := tx.Exec(`UPDATE files SET missing_since = NULL
 		WHERE relpath = ? AND volume_id = (SELECT id FROM volumes WHERE key = ?)`, a.RelPath, a.VolumeKey); err != nil {

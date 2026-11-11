@@ -151,6 +151,10 @@ func (a *app) registerCompletions(root *cobra.Command) {
 			}
 			mustRegister(cmd, "export", completeExt("csv", "json"))
 			mustRegister(cmd, "prefer-path", cobra.NoFileCompletions)
+		case "copy":
+			cmd.ValidArgsFunction = completeDirArg
+			mustRegister(cmd, "to", completeDirs)
+			mustRegister(cmd, "map", completeExt("tsv", "txt"))
 		case "trash":
 			cmd.ValidArgsFunction = completeDirArg
 			mustRegister(cmd, "confirm", completeValues("delete\tconfirm emptying without a terminal"))

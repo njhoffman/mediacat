@@ -119,7 +119,7 @@ func (a *app) undoCmd() *cobra.Command {
 	var yes bool
 	cmd := &cobra.Command{
 		Use:   "undo <batch>",
-		Short: "Put files from a trash or move batch back where they were",
+		Short: "Put files from a trash or move batch back where they were, or remove a copy batch's copies",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := strconv.ParseInt(args[0], 10, 64)
@@ -157,9 +157,17 @@ func (a *app) runUndo(id int64, yes bool) error {
 	if n == 0 {
 		return fmt.Errorf("batch %d has nothing left to undo", id)
 	}
-	fmt.Fprintf(a.stderr, "%s\n", ui.Banner(ui.LevelInfo,
-		fmt.Sprintf("%s files (%s) will be RESTORED to their original locations", ui.Count(n), ui.Bytes(bytes)),
-		"Files whose original path is now occupied are left where they are."))
+	label, done := "Restoring", "restored"
+	if b.Kind == catalog.ActionCopy {
+		label, done = "Removing copies", "copies removed"
+		fmt.Fprintf(a.stderr, "%s\n", ui.Banner(ui.LevelWarn,
+			fmt.Sprintf("%s copies (%s) will be REMOVED from %s", ui.Count(n), ui.Bytes(bytes), b.Dest),
+			"The originals are not touched. A copy whose original is gone or changed is kept."))
+	} else {
+		fmt.Fprintf(a.stderr, "%s\n", ui.Banner(ui.LevelInfo,
+			fmt.Sprintf("%s files (%s) will be RESTORED to their original locations", ui.Count(n), ui.Bytes(bytes)),
+			"Files whose original path is now occupied are left where they are."))
+	}
 	if !yes {
 		ok, err := a.confirm("Proceed? [y/N] ", "")
 		if err != nil {
@@ -176,14 +184,14 @@ func (a *app) runUndo(id int64, yes bool) error {
 	var out *actions.Outcome
 	err = ui.Progress{Out: a.stderr, Cancel: cancel}.Run(ctx, func(report func(ui.Update)) error {
 		ex.Progress = func(e actions.Event) {
-			report(ui.Update{Label: "Restoring", Done: e.Done, Total: e.Total, Bytes: e.Bytes, TotalBytes: e.TotalBytes, Current: e.Current})
+			report(ui.Update{Label: label, Done: e.Done, Total: e.Total, Bytes: e.Bytes, TotalBytes: e.TotalBytes, Current: e.Current})
 		}
 		var err error
 		out, err = ex.Undo(ctx, id)
 		return err
 	})
 	if out != nil {
-		fmt.Fprintf(a.stdout, "%s %s files (%s) restored.\n", ui.OK.Render("Done:"), ui.Count(out.Done), ui.Bytes(out.Bytes))
+		fmt.Fprintf(a.stdout, "%s %s files (%s) %s.\n", ui.OK.Render("Done:"), ui.Count(out.Done), ui.Bytes(out.Bytes), done)
 		for _, f := range out.Failed {
 			fmt.Fprintf(a.stdout, "  %s  %s\n", ui.Err.Render(f.Path), ui.Dim.Render(f.Err))
 		}

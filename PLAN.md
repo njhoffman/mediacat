@@ -350,6 +350,26 @@ release each:
   every problem listed by line. The kept path must exist (it is resolved to a volume), so
   decisions for unmounted volumes cannot be imported. `clear --all` asks first (`--yes`).
 
+## Copying between drives
+
+Agreed 2026-11-11 (TODO.md section 1):
+
+- `mediacat copy SOURCE --to DIR`: files under SOURCE with no identical copy on DIR's whole
+  drive (as cataloged; both drives must be scanned, staleness warns). Only sizes present
+  on both sides are hashed, through dupes.Finder. Layout: path below SOURCE, or `--map`
+  from<TAB>to rules (longest wins). Never overwrites; clashes listed. Stops before free
+  space drops under `--min-free` (default 10G), checked before every file. Each copy goes
+  to `NAME.mediacat-partial`, is fsynced, read back with the page cache dropped and
+  compared, then renamed (no-replace) with the source mtime. Copies are cataloged with
+  the source's metadata and hash (`RecordCopy`), which makes reruns resume.
+- A copy action's volume/relpath is the new copy. `undo` removes a copy only while the
+  original exists with the same size and the copy is unchanged in size; the catalog row
+  goes with it.
+- Drop-outs: wait (`--wait`, default 10m) for the desktop's automount to bring the same
+  UUID back at any mount point, then redo the current file; `--bwlimit` throttles reads.
+- `--readonly` (opt-in) remounts a removable volume read-only via udisksctl for scan,
+  dupes and check, and restores it after.
+
 ## Help, man pages, completion
 
 - `-h/--help` on every command and cobra's `completion bash|zsh|fish|powershell`.

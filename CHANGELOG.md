@@ -6,6 +6,20 @@ versions follow [semantic versioning](https://semver.org/) and are git tags
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-11
+
+### Added
+
+- `mediacat copy SOURCE --to DIR`: copy the media under SOURCE whose content
+  has no identical copy anywhere on DIR's drive (full hash; only files whose
+  size matches something there are hashed), keeping paths below SOURCE or
+  laying them out by a `--map` file of from/to rules. Never overwrites (name
+  clashes are listed), stops before free space drops below `--min-free`
+  (10G), reads each copy back from the drive before renaming it into place,
+  and catalogs the copies, so a rerun continues where it stopped. A dry run
+  until `--execute`; `mediacat undo` removes a batch's copies while their
+  originals are still in place.
+
 ## [0.17.0] - 2026-11-11
 
 ### Added

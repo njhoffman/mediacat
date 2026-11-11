@@ -300,6 +300,88 @@ func Move(ctx context.Context, src, dst, wantHash string) error {
 	return os.Remove(src)
 }
 
+// CopyFile copies src to dst without ever overwriting: it writes dst+".mediacat-partial"
+// while hashing what it reads, checks the hash against wantHash (when known), flushes the
+// copy to disk and, with verify, reads it back from the device and compares again. Only
+// then is the copy renamed into place with src's modification time. progress (may be nil)
+// gets the bytes copied so far. It returns the content hash.
+func CopyFile(ctx context.Context, src, dst, wantHash string, verify bool, progress func(int64)) (string, error) {
+	if _, err := os.Lstat(dst); err == nil {
+		return "", fmt.Errorf("destination %s already exists", dst)
+	}
+	st, err := os.Stat(src)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return "", err
+	}
+	tmp := dst + ".mediacat-partial"
+	os.Remove(tmp) // left by an interrupted run; the name is mediacat's own
+	sum, err := copyHashed(ctx, src, tmp, progress)
+	if err == nil && wantHash != "" && sum != wantHash {
+		err = fmt.Errorf("content of %s no longer matches its hash; not copied", src)
+	}
+	if err == nil && verify {
+		var back string
+		if back, err = readBack(ctx, tmp); err == nil && back != sum {
+			err = fmt.Errorf("the copy at %s reads back differently (bad write or failing drive)", dst)
+		}
+	}
+	if err == nil {
+		err = os.Chtimes(tmp, st.ModTime(), st.ModTime())
+	}
+	if err == nil {
+		err = renameNoReplace(tmp, dst)
+	}
+	if err != nil {
+		os.Remove(tmp)
+		return "", err
+	}
+	return sum, nil
+}
+
+// copyHashed copies src to a new file dst, flushed to disk, and returns the hash of what
+// was read.
+func copyHashed(ctx context.Context, src, dst string, progress func(int64)) (string, error) {
+	in, err := os.Open(src)
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return "", err
+	}
+	h := hash.Writer()
+	err = hash.Copy(ctx, multiWriter{out, h}, in, progress)
+	if err == nil {
+		err = out.Sync()
+	}
+	if err == nil {
+		// Drop the written pages so a read-back comes from the device, not the cache.
+		unix.Fadvise(int(out.Fd()), 0, 0, unix.FADV_DONTNEED)
+	}
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	return h.Sum(), err
+}
+
+func readBack(ctx context.Context, path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	unix.Fadvise(int(f.Fd()), 0, 0, unix.FADV_DONTNEED)
+	h := hash.Writer()
+	if err := hash.Copy(ctx, h, f, nil); err != nil {
+		return "", err
+	}
+	return h.Sum(), nil
+}
+
 // renameNoReplace renames atomically without overwriting an existing dst. Filesystems
 // that do not support RENAME_NOREPLACE (some network filesystems) fall back to a check
 // followed by a plain rename.
@@ -410,12 +492,17 @@ func (e *Executor) Undo(ctx context.Context, batchID int64) (*Outcome, error) {
 			out.Interrupted = true
 			break
 		}
-		err := undoOne(ctx, a)
+		var err error
+		if b.Kind == catalog.ActionCopy {
+			err = undoCopy(a)
+		} else {
+			err = undoOne(ctx, a)
+		}
 		switch {
 		case err != nil:
 			out.Failed = append(out.Failed, dupes.Failure{Path: a.SourcePath, Err: err.Error()})
 		default:
-			if err := e.DB.MarkActionUndone(a); err != nil {
+			if err := e.DB.MarkActionUndone(a, b.Kind); err != nil {
 				return out, err
 			}
 			out.Done++
@@ -433,6 +520,26 @@ func (e *Executor) Undo(ctx context.Context, batchID int64) (*Outcome, error) {
 		return out, e.DB.MarkBatchUndone(batchID, e.now())
 	}
 	return out, nil
+}
+
+// undoCopy removes a copy mediacat made, but only while the original is still there and the
+// copy is unchanged in size, so undoing never loses the last copy of anything.
+func undoCopy(a catalog.Action) error {
+	st, err := os.Stat(a.DestPath)
+	if err != nil {
+		return fmt.Errorf("copy is no longer at %s", a.DestPath)
+	}
+	if st.Size() != a.Size {
+		return fmt.Errorf("copy at %s changed since it was made; kept", a.DestPath)
+	}
+	src, err := os.Stat(a.SourcePath)
+	if err != nil || src.Size() != a.Size {
+		return fmt.Errorf("original %s is gone or changed; kept the copy", a.SourcePath)
+	}
+	if os.SameFile(st, src) {
+		return fmt.Errorf("copy and original are the same file; kept")
+	}
+	return os.Remove(a.DestPath)
 }
 
 func undoOne(ctx context.Context, a catalog.Action) error {

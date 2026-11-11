@@ -436,3 +436,43 @@ func TestItemsBefore(t *testing.T) {
 		t.Errorf("both dated items are older than 30 days on: %+v", items)
 	}
 }
+
+func TestCopyFileAndUndo(t *testing.T) {
+	e := newEnv(t)
+	src := e.write("src/a.mp4", "copy me", 2)
+	dst := filepath.Join(e.dir, "dst", "sub", "a.mp4")
+	var seen int64
+	sum, err := CopyFile(context.Background(), src, dst, "", true, func(n int64) { seen = n })
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(dst)
+	sst, _ := os.Stat(src)
+	dstSt, _ := os.Stat(dst)
+	if string(b) != "copy me" || sum == "" || seen != 7 || !dstSt.ModTime().Equal(sst.ModTime()) {
+		t.Errorf("copy: %q %s seen=%d mtime %v vs %v", b, sum, seen, dstSt.ModTime(), sst.ModTime())
+	}
+	if exists(dst + ".mediacat-partial") {
+		t.Error("partial file left behind")
+	}
+	if _, err := CopyFile(context.Background(), src, dst, "", true, nil); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("must not overwrite: %v", err)
+	}
+	other := filepath.Join(e.dir, "dst", "b.mp4")
+	if _, err := CopyFile(context.Background(), src, other, "wrong", false, nil); err == nil || exists(other) || exists(other+".mediacat-partial") {
+		t.Errorf("a hash mismatch must leave nothing: %v", err)
+	}
+
+	a := catalog.Action{SourcePath: src, DestPath: dst, Size: 7}
+	os.WriteFile(src, []byte("changed!!"), 0o644)
+	if err := undoCopy(a); err == nil || !exists(dst) {
+		t.Errorf("undo must keep the copy when the original changed: %v", err)
+	}
+	os.WriteFile(src, []byte("copy me"), 0o644)
+	if err := undoCopy(a); err != nil || exists(dst) {
+		t.Errorf("undo: %v", err)
+	}
+	if err := undoCopy(a); err == nil {
+		t.Error("undoing a missing copy should fail")
+	}
+}
