@@ -121,7 +121,9 @@ func (a *app) rootCmd(version string) *cobra.Command {
 		Long: `mediacat keeps a persistent catalog of media files and their metadata
 (codecs, resolution, duration, tags) and finds and manages duplicates.
 
-Run without arguments for a dashboard of what has been cataloged.`,
+Run without arguments for a dashboard of what has been cataloged. Every command takes
+-h/--help; "man mediacat-<command>" has the same text once installed (just build).
+Shell completion: mediacat completion bash|zsh|fish prints the script.`,
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -141,7 +143,8 @@ Run without arguments for a dashboard of what has been cataloged.`,
 	f.IntVar(&a.staleDays, "stale-days", staleDefault, "warn when the catalog for a path is older than this many days (0 disables; env MEDIACAT_STALE_DAYS)")
 	f.BoolVar(&a.noColor, "no-color", false, "disable colored output (also honors NO_COLOR)")
 	f.StringVar(&a.stashCfg, "stash-config", a.cfg.StashConfig, "Stash config, read to remind you when files in Stash libraries change")
-	root.AddCommand(a.scanCmd(), a.listCmd(), a.infoCmd(), a.dupesCmd(), a.trashCmd(), a.historyCmd(), a.undoCmd(), a.checkCmd())
+	root.AddCommand(a.scanCmd(), a.listCmd(), a.infoCmd(), a.dupesCmd(), a.trashCmd(), a.historyCmd(), a.undoCmd(), a.checkCmd(), a.manCmd(version))
+	a.registerCompletions(root)
 	return root
 }
 

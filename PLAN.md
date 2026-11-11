@@ -347,6 +347,17 @@ release each:
   cataloged or (for content-hash keys) whose full hash differs from the key. Similar-group
   keys are path-checked only.
 
+## Help, man pages, completion
+
+- `-h/--help` on every command and cobra's `completion bash|zsh|fish|powershell`.
+- Man pages come from the same help text through spf13/cobra/doc (hidden `man DIR`), so
+  they cannot drift; indented help tables become preformatted blocks.
+- Value completion in `internal/cli/completion.go`; every string flag without a value
+  list completes nothing rather than file names.
+- `just build` runs `just install-docs`: man pages to `$XDG_DATA_HOME/man/man1`,
+  completions to `bash-completion/completions`, `zsh/site-functions` (on the user's
+  fpath) and `~/.config/fish/completions`.
+
 ## Versioning
 
 - Semver tags `vX.Y.Z` (pre-1.0: minor for features or schema changes, patch for fixes).

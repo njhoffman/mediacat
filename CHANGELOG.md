@@ -6,6 +6,20 @@ versions follow [semantic versioning](https://semver.org/) and are git tags
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-11
+
+### Added
+
+- Man pages: `mediacat(1)` and one page per command (`man mediacat-dupes`),
+  generated from the `--help` text by the hidden `mediacat man DIR`.
+- Shell completion for flag values: `--depth`, `--type`, `--similar`,
+  `--keep` rules, `list --sort`/`--columns` fields and `--check` statuses
+  (comma lists complete each element), directories for path arguments and
+  directory flags, files for `info`, and recent batch numbers for `undo` and
+  `history`. Free-text flags no longer offer file names.
+- `just build` installs the man pages under `~/.local/share/man/man1` and the
+  bash, zsh and fish completion scripts (`just install-docs` on its own).
+
 ## [0.8.0] - 2026-11-11
 
 ### Added
@@ -13,7 +27,6 @@ versions follow [semantic versioning](https://semver.org/) and are git tags
 - `dupes --only-under DIR` (repeatable): trash, move or delete only copies below
   DIR, whichever copy the keep rules choose; the others stay in place and the
   summary says how many and how large. Also limits what `--review` applies.
-
 - `TODO.md` with the work found while cleaning up a Stash library on
   2026-11-10: acting on chosen duplicate groups without the review screen,
   copying unique files between drives, drives that drop out, and scripted

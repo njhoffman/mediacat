@@ -27,6 +27,25 @@ build:
     @mkdir -p "$(dirname {{link}})"
     @ln -sfn "{{justfile_directory()}}/mediacat" "{{link}}"
     @echo "mediacat {{version}} -> {{link}}"
+    @just install-docs
+
+# Install the man pages and the bash, zsh and fish completions under ~/.local (build runs it).
+# zsh needs ~/.local/share/zsh/site-functions on fpath before compinit.
+install-docs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    data="${XDG_DATA_HOME:-$HOME/.local/share}"
+    man1="$data/man/man1"
+    bash_dir="$data/bash-completion/completions"
+    zsh_dir="$data/zsh/site-functions"
+    fish_dir="${XDG_CONFIG_HOME:-$HOME/.config}/fish/completions"
+    mkdir -p "$man1" "$bash_dir" "$zsh_dir" "$fish_dir"
+    rm -f "$man1"/mediacat.1 "$man1"/mediacat-*.1
+    {{bin}} man "$man1" >/dev/null
+    {{bin}} completion bash > "$bash_dir/mediacat"
+    {{bin}} completion zsh > "$zsh_dir/_mediacat"
+    {{bin}} completion fish > "$fish_dir/mediacat.fish"
+    echo "man pages -> $man1; completions -> $bash_dir, $zsh_dir, $fish_dir"
 
 # Same as build: the installed command is the symlink build maintains
 install: build
