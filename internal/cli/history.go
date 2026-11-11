@@ -15,6 +15,7 @@ import (
 
 	"github.com/njhoffman/mediacat/internal/actions"
 	"github.com/njhoffman/mediacat/internal/catalog"
+	"github.com/njhoffman/mediacat/internal/filter"
 	"github.com/njhoffman/mediacat/internal/ui"
 	"github.com/njhoffman/mediacat/internal/volume"
 )
@@ -191,8 +192,14 @@ func (a *app) runUndo(id int64, yes bool) error {
 	return err
 }
 
+type trashOpts struct {
+	empty, everything bool
+	olderThan         string
+	cutoff            time.Time // zero: no age limit
+}
+
 func (a *app) trashCmd() *cobra.Command {
-	var empty, everything bool
+	var o trashOpts
 	cmd := &cobra.Command{
 		Use:   "trash [path]",
 		Short: "Show the trash on path's drive, and empty what mediacat put there",
@@ -200,28 +207,46 @@ func (a *app) trashCmd() *cobra.Command {
 holds and how much of that mediacat put there.
 
 --empty permanently removes the files mediacat trashed. --everything also removes items
-other programs trashed. Both always ask you to type "delete".`,
+other programs trashed. Both always ask you to type "delete".
+
+--older-than AGE (7d, 2w, 36h) or DATE (2026-11-01) empties only what was trashed before
+then: mediacat's batches by when they ran, other programs' items (with --everything) by
+the DeletionDate in their .trashinfo. Recent batches stay undoable.`,
+		Example: `  mediacat trash /mnt/nfs/Stash
+  mediacat trash /mnt/nfs/Stash --empty
+  mediacat trash /mnt/nfs/Stash --empty --older-than 7d`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dir := "."
 			if len(args) == 1 {
 				dir = args[0]
 			}
-			if everything && !empty {
+			if o.everything && !o.empty {
 				return errors.New("--everything needs --empty")
+			}
+			if o.olderThan != "" {
+				if !o.empty {
+					return errors.New("--older-than limits --empty; add --empty")
+				}
+				cutoff, err := filter.ParseTime(o.olderThan, a.now())
+				if err != nil {
+					return fmt.Errorf("--older-than: %w", err)
+				}
+				o.cutoff = cutoff
 			}
 			if err := a.open(); err != nil {
 				return err
 			}
-			return a.runTrash(dir, empty, everything)
+			return a.runTrash(dir, o)
 		},
 	}
-	cmd.Flags().BoolVar(&empty, "empty", false, "permanently remove files mediacat moved to this trash")
-	cmd.Flags().BoolVar(&everything, "everything", false, "with --empty, also remove items other programs trashed")
+	cmd.Flags().BoolVar(&o.empty, "empty", false, "permanently remove files mediacat moved to this trash")
+	cmd.Flags().BoolVar(&o.everything, "everything", false, "with --empty, also remove items other programs trashed")
+	cmd.Flags().StringVar(&o.olderThan, "older-than", "", "with --empty, only what was trashed before this age or date, e.g. 7d or 2026-11-01")
 	return cmd
 }
 
-func (a *app) runTrash(dir string, empty, everything bool) error {
+func (a *app) runTrash(dir string, o trashOpts) error {
 	v, _, err := a.res.Resolve(dir)
 	if err != nil {
 		return err
@@ -257,19 +282,58 @@ func (a *app) runTrash(dir string, empty, everything bool) error {
 				ui.Dim.Render(b.Started.Format("2006-01-02 15:04")), ui.Count(b.Files), ui.Bytes(b.Bytes), b.Root)
 		}
 	}
-	if !empty {
+	if !o.empty {
 		if len(ours) > 0 {
 			fmt.Fprintf(a.stdout, "\n%s\n", ui.Dim.Render("Free that space with: mediacat trash "+ui.Quote(dir)+" --empty"))
 		}
 		return nil
 	}
 
-	count, bytes := len(ours), ourBytes
+	// What will go: mediacat's entries (of batches older than the cutoff), or every item
+	// (trashed before the cutoff).
+	var old []actions.Item
+	if !o.cutoff.IsZero() {
+		var kept []catalog.Action
+		for _, b := range batches {
+			if !b.Started.Before(o.cutoff) {
+				continue
+			}
+			for _, act := range ours {
+				if act.BatchID == b.ID {
+					kept = append(kept, act)
+				}
+			}
+		}
+		ours = kept
+		if o.everything {
+			if old, err = tr.ItemsBefore(loc, o.cutoff); err != nil {
+				return err
+			}
+		}
+	}
+	count, bytes := len(ours), int64(0)
+	for _, act := range ours {
+		bytes += act.Size
+	}
 	scope := "the files mediacat trashed"
-	if everything {
+	if !o.cutoff.IsZero() {
+		scope += " before " + o.cutoff.Format("2006-01-02 15:04")
+	}
+	switch {
+	case o.everything && o.cutoff.IsZero():
 		count, bytes, scope = usage.Items, usage.Bytes, "EVERYTHING in this trash, including items other programs trashed"
+	case o.everything:
+		count, bytes = len(old), 0
+		for _, it := range old {
+			bytes += it.Bytes
+		}
+		scope = "EVERYTHING trashed before " + o.cutoff.Format("2006-01-02 15:04") + ", including items other programs trashed"
 	}
 	if count == 0 {
+		if !o.cutoff.IsZero() {
+			fmt.Fprintf(a.stdout, "\nNothing was trashed before %s.\n", o.cutoff.Format("2006-01-02 15:04"))
+			return nil
+		}
 		fmt.Fprintln(a.stdout, "\nNothing to empty.")
 		return nil
 	}
@@ -285,12 +349,41 @@ func (a *app) runTrash(dir string, empty, everything bool) error {
 		return nil
 	}
 	removed, failed := 0, 0
-	if everything {
+	switch {
+	case o.everything && o.cutoff.IsZero():
 		removed, failed = emptyAll(loc)
 		for _, act := range ours {
 			a.db.MarkActionPurged(act.ID)
 		}
-	} else {
+	case o.everything:
+		for _, it := range old {
+			if err := os.RemoveAll(it.Path); err != nil {
+				failed++
+				fmt.Fprintf(a.stderr, "  %s  %s\n", ui.Err.Render(it.Path), err)
+				continue
+			}
+			os.Remove(it.Info)
+			removed++
+		}
+		// mediacat's entries removed by age (whatever their batch time) are purged.
+		all, err := a.trashedHere(v, loc)
+		if err != nil {
+			return err
+		}
+		still := map[int64]bool{}
+		for _, act := range all {
+			still[act.ID] = true
+		}
+		acts, err := a.db.TrashedEntries(v.Key)
+		if err != nil {
+			return err
+		}
+		for _, act := range acts {
+			if !still[act.ID] && isWithin(act.DestPath, loc.Dir) {
+				a.db.MarkActionPurged(act.ID)
+			}
+		}
+	default:
 		for _, act := range ours {
 			if err := os.RemoveAll(act.DestPath); err != nil {
 				failed++

@@ -409,3 +409,30 @@ func TestOnlyUnderGuard(t *testing.T) {
 		t.Error("Guards should return the first non-empty reason")
 	}
 }
+
+func TestItemsBefore(t *testing.T) {
+	e := newEnv(t)
+	loc := e.trash.Locate(e.v)
+	old := e.write("old.mp4", "old content", 0)
+	recent := e.write("recent.mp4", "recent", 0)
+	if _, _, err := e.trash.Trash(old, loc, t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.trash.Trash(recent, loc, t0.Add(10*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	// An entry another program left without a DeletionDate is never picked by age.
+	os.WriteFile(filepath.Join(loc.Dir, "files", "nodate.txt"), []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(loc.Dir, "info", "nodate.txt.trashinfo"), []byte("[Trash Info]\nPath=/x/nodate.txt\n"), 0o644)
+
+	items, err := e.trash.ItemsBefore(loc, t0.Add(5*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Name != "old.mp4" || items[0].Bytes != 11 || !items[0].Deleted.Equal(t0) {
+		t.Fatalf("items: %+v", items)
+	}
+	if items, _ := e.trash.ItemsBefore(loc, t0.Add(30*24*time.Hour)); len(items) != 2 {
+		t.Errorf("both dated items are older than 30 days on: %+v", items)
+	}
+}

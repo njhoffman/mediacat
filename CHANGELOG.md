@@ -6,6 +6,16 @@ versions follow [semantic versioning](https://semver.org/) and are git tags
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-11
+
+### Added
+
+- `trash --empty --older-than AGE|DATE` (`7d`, `2w`, `36h`, `2026-11-01`):
+  remove only what was trashed before then, so recent batches stay
+  undoable. mediacat's files go by their batch's time; with `--everything`,
+  other programs' items go by the DeletionDate in their `.trashinfo`, and
+  items without one are kept.
+
 ## [0.15.0] - 2026-11-11
 
 ### Added

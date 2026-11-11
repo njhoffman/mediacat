@@ -214,3 +214,76 @@ func (t *Trasher) Usage(loc Location) (Usage, error) {
 	})
 	return u, err
 }
+
+// Item is one entry of a trash: its files/ entry, its .trashinfo and when it was trashed.
+type Item struct {
+	Name    string
+	Path    string // files/ entry (a file or a directory)
+	Info    string // .trashinfo
+	Deleted time.Time
+	Bytes   int64
+}
+
+// ItemsBefore lists the entries of loc trashed before cutoff, by the DeletionDate in their
+// .trashinfo (local time, as the trash spec writes it). Entries without a readable date are
+// left out, so they are never removed by age.
+func (t *Trasher) ItemsBefore(loc Location, cutoff time.Time) ([]Item, error) {
+	infoDir := filepath.Join(loc.Dir, "info")
+	entries, err := os.ReadDir(infoDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []Item
+	for _, e := range entries {
+		name, ok := strings.CutSuffix(e.Name(), ".trashinfo")
+		if !ok {
+			continue
+		}
+		infoPath := filepath.Join(infoDir, e.Name())
+		deleted, ok := deletionDate(infoPath)
+		if !ok || !deleted.Before(cutoff) {
+			continue
+		}
+		path := filepath.Join(loc.Dir, "files", name)
+		if _, err := os.Lstat(path); err != nil {
+			continue
+		}
+		out = append(out, Item{Name: name, Path: path, Info: infoPath, Deleted: deleted, Bytes: treeBytes(path)})
+	}
+	return out, nil
+}
+
+func deletionDate(infoPath string) (time.Time, bool) {
+	b, err := os.ReadFile(infoPath)
+	if err != nil {
+		return time.Time{}, false
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		v, ok := strings.CutPrefix(strings.TrimSpace(line), "DeletionDate=")
+		if !ok {
+			continue
+		}
+		for _, layout := range []string{"2006-01-02T15:04:05", time.RFC3339} {
+			if d, err := time.ParseInLocation(layout, strings.TrimSpace(v), time.Local); err == nil {
+				return d, true
+			}
+		}
+	}
+	return time.Time{}, false
+}
+
+func treeBytes(path string) int64 {
+	var n int64
+	filepath.WalkDir(path, func(_ string, d os.DirEntry, err error) error {
+		if err == nil && d.Type().IsRegular() {
+			if info, err := d.Info(); err == nil {
+				n += info.Size()
+			}
+		}
+		return nil
+	})
+	return n
+}

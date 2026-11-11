@@ -33,7 +33,7 @@ Reviewed: 2026-11-10
   refuses without an interactive terminal (by design). Add an explicit
   `--confirm delete` flag for scripted runs, still refusing without it,
   so an agent or a timer can empty it on a user's explicit request.
-- [ ] **Empty only older batches.** (p3) [feature] `trash --empty
+- [x] **Empty only older batches.** (p3) [feature] `trash --empty
   --older-than 7d`: remove batches trashed more than N days ago and keep
   recent ones undoable, so space can be freed without losing the undo for
   today's cleanup.
