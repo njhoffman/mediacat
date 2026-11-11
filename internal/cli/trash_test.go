@@ -90,3 +90,38 @@ func TestTrashEmptyEverythingOlderThan(t *testing.T) {
 		t.Errorf("listing after:\n%s", out)
 	}
 }
+
+func TestTrashEmptyConfirm(t *testing.T) {
+	h, _, trash := twoTrashBatches(t)
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--empty", "--confirm", "yes"}, `takes the word "delete"`},
+		{[]string{"--confirm", "delete"}, "add --empty"},
+		{[]string{"--empty", "--everything", "--confirm", "delete"}, "confirmed in a terminal only"},
+		{[]string{"--empty"}, "--confirm delete"},
+	} {
+		if _, errs, code := h.run(append([]string{"trash", h.dir}, c.args...)...); code != 1 || !strings.Contains(errs, c.want) {
+			t.Errorf("%v: %d %s", c.args, code, errs)
+		}
+	}
+	// Without a terminal, --everything gives no --confirm hint.
+	if _, errs, _ := h.run("trash", h.dir, "--empty", "--everything"); strings.Contains(errs, "--confirm") {
+		t.Errorf("--everything should not suggest --confirm: %s", errs)
+	}
+	out, errs := h.ok("trash", h.dir, "--empty", "--older-than", "7d", "--confirm", "delete")
+	if !strings.Contains(errs, "PERMANENTLY DELETED") || !strings.Contains(out, "Done: 1 items removed") {
+		t.Fatalf("scripted empty:\n%s\n%s", out, errs)
+	}
+	out, _ = h.ok("trash", h.dir, "--empty", "--confirm", "delete")
+	if !strings.Contains(out, "Done: 1 items removed") {
+		t.Errorf("scripted empty of the rest:\n%s", out)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(trash, "files")); len(entries) != 0 {
+		t.Errorf("trash should be empty: %v", entries)
+	}
+	if got, _ := h.complete("trash", "--confirm", ""); len(got) != 1 || got[0] != "delete" {
+		t.Errorf("--confirm completion: %q", got)
+	}
+}

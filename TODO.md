@@ -27,20 +27,6 @@ Reviewed: 2026-11-10
   option (or the default for scan and dupes, which only read) to remount a
   removable volume read-only first, so a drop-out cannot corrupt it.
 
-## 2. Trash
-
-- [ ] **Empty the trash from a script.** (p2) [feature] `trash --empty`
-  refuses without an interactive terminal (by design). Add an explicit
-  `--confirm delete` flag for scripted runs, still refusing without it,
-  so an agent or a timer can empty it on a user's explicit request.
-- [x] **Empty only older batches.** (p3) [feature] `trash --empty
-  --older-than 7d`: remove batches trashed more than N days ago and keep
-  recent ones undoable, so space can be freed without losing the undo for
-  today's cleanup.
-- [x] **Show what is in the trash by batch.** (p3) [feature] `trash` lists
-  batches (date, command, files, bytes) next to the totals, as `history`
-  does, so it is clear what emptying would remove.
-
 ## Completed
 
 ### 1. Acting on chosen groups without the review screen (completed 2026-11-11)
@@ -83,3 +69,17 @@ Reviewed: 2026-11-10
   `catalog.DeleteDecisions` runs one DELETE per key outside a transaction;
   for hundreds of applied groups (434 in the cleanup) batch them with
   `IN (...)` in chunks of 500, as `LoadDecisions` does.
+
+### 2. Trash (completed 2026-11-11)
+
+- [x] **Empty the trash from a script.** (p2) [feature] `trash --empty`
+  refuses without an interactive terminal (by design). Add an explicit
+  `--confirm delete` flag for scripted runs, still refusing without it,
+  so an agent or a timer can empty it on a user's explicit request.
+- [x] **Empty only older batches.** (p3) [feature] `trash --empty
+  --older-than 7d`: remove batches trashed more than N days ago and keep
+  recent ones undoable, so space can be freed without losing the undo for
+  today's cleanup.
+- [x] **Show what is in the trash by batch.** (p3) [feature] `trash` lists
+  batches (date, command, files, bytes) next to the totals, as `history`
+  does, so it is clear what emptying would remove.

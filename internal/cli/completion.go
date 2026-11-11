@@ -138,7 +138,7 @@ func (a *app) registerCompletions(root *cobra.Command) {
 	mustRegister(root, "db", completeExt("db", "sqlite"))
 	for _, cmd := range root.Commands() {
 		switch cmd.Name() {
-		case "scan", "list", "check", "trash":
+		case "scan", "list", "check":
 			cmd.ValidArgsFunction = completeDirArg
 		case "dupes":
 			cmd.ValidArgsFunction = completeDirArg
@@ -151,6 +151,9 @@ func (a *app) registerCompletions(root *cobra.Command) {
 			}
 			mustRegister(cmd, "export", completeExt("csv", "json"))
 			mustRegister(cmd, "prefer-path", cobra.NoFileCompletions)
+		case "trash":
+			cmd.ValidArgsFunction = completeDirArg
+			mustRegister(cmd, "confirm", completeValues("delete\tconfirm emptying without a terminal"))
 		case "info":
 			cmd.ValidArgsFunction = func(_ *cobra.Command, args []string, _ string) ([]cobra.Completion, cobra.ShellCompDirective) {
 				if len(args) > 0 {

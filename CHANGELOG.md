@@ -6,6 +6,14 @@ versions follow [semantic versioning](https://semver.org/) and are git tags
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-11
+
+### Added
+
+- `trash --empty --confirm delete`: confirm up front, so a script or timer
+  can empty what mediacat trashed (with `--older-than` too). It is refused
+  with `--everything`, which still needs the typed confirmation.
+
 ## [0.16.0] - 2026-11-11
 
 ### Added

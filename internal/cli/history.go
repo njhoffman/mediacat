@@ -196,6 +196,7 @@ type trashOpts struct {
 	empty, everything bool
 	olderThan         string
 	cutoff            time.Time // zero: no age limit
+	confirm           string    // "delete" confirms without a terminal
 }
 
 func (a *app) trashCmd() *cobra.Command {
@@ -211,10 +212,15 @@ other programs trashed. Both always ask you to type "delete".
 
 --older-than AGE (7d, 2w, 36h) or DATE (2026-11-01) empties only what was trashed before
 then: mediacat's batches by when they ran, other programs' items (with --everything) by
-the DeletionDate in their .trashinfo. Recent batches stay undoable.`,
+the DeletionDate in their .trashinfo. Recent batches stay undoable.
+
+--confirm delete gives the confirmation up front, for scripts and timers: the files
+mediacat trashed are removed without asking. It does not extend to --everything, which
+removes other programs' items and is always confirmed in a terminal.`,
 		Example: `  mediacat trash /mnt/nfs/Stash
   mediacat trash /mnt/nfs/Stash --empty
-  mediacat trash /mnt/nfs/Stash --empty --older-than 7d`,
+  mediacat trash /mnt/nfs/Stash --empty --older-than 7d
+  mediacat trash /mnt/nfs/Stash --empty --older-than 7d --confirm delete`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dir := "."
@@ -223,6 +229,16 @@ the DeletionDate in their .trashinfo. Recent batches stay undoable.`,
 			}
 			if o.everything && !o.empty {
 				return errors.New("--everything needs --empty")
+			}
+			if o.confirm != "" {
+				switch {
+				case o.confirm != "delete":
+					return fmt.Errorf(`--confirm takes the word "delete", not %q`, o.confirm)
+				case !o.empty:
+					return errors.New("--confirm delete confirms --empty; add --empty")
+				case o.everything:
+					return errors.New("--everything removes other programs' items too, so it is confirmed in a terminal only; drop --confirm or --everything")
+				}
 			}
 			if o.olderThan != "" {
 				if !o.empty {
@@ -242,6 +258,7 @@ the DeletionDate in their .trashinfo. Recent batches stay undoable.`,
 	}
 	cmd.Flags().BoolVar(&o.empty, "empty", false, "permanently remove files mediacat moved to this trash")
 	cmd.Flags().BoolVar(&o.everything, "everything", false, "with --empty, also remove items other programs trashed")
+	cmd.Flags().StringVar(&o.confirm, "confirm", "", `with --empty, "delete" confirms without a terminal (not for --everything)`)
 	cmd.Flags().StringVar(&o.olderThan, "older-than", "", "with --empty, only what was trashed before this age or date, e.g. 7d or 2026-11-01")
 	return cmd
 }
@@ -340,13 +357,19 @@ func (a *app) runTrash(dir string, o trashOpts) error {
 	fmt.Fprintf(a.stderr, "\n%s\n", ui.Banner(ui.LevelDanger,
 		fmt.Sprintf("%s items (%s) will be PERMANENTLY DELETED", ui.Count(count), ui.Bytes(bytes)),
 		"From: "+loc.Dir, "Scope: "+scope, "This cannot be undone."))
-	ok, err := a.confirm(ui.Err.Render(`Type "delete" to empty the trash: `), "delete")
-	if err != nil {
-		return fmt.Errorf("emptying the trash must be confirmed in a terminal: %w", err)
-	}
-	if !ok {
-		fmt.Fprintln(a.stderr, "Cancelled; nothing was deleted.")
-		return nil
+	if o.confirm != "delete" {
+		ok, err := a.confirm(ui.Err.Render(`Type "delete" to empty the trash: `), "delete")
+		if err != nil {
+			hint := ` (or pass --confirm delete)`
+			if o.everything {
+				hint = ""
+			}
+			return fmt.Errorf("emptying the trash must be confirmed in a terminal%s: %w", hint, err)
+		}
+		if !ok {
+			fmt.Fprintln(a.stderr, "Cancelled; nothing was deleted.")
+			return nil
+		}
 	}
 	removed, failed := 0, 0
 	switch {
