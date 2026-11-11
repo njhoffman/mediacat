@@ -346,6 +346,9 @@ release each:
   path to keep, action) into `review_decisions`, rejecting rows whose path is not
   cataloged or (for content-hash keys) whose full hash differs from the key. Similar-group
   keys are path-checked only.
+  Import is all or nothing: one bad row (or a group decided twice) rejects the file, with
+  every problem listed by line. The kept path must exist (it is resolved to a volume), so
+  decisions for unmounted volumes cannot be imported. `clear --all` asks first (`--yes`).
 
 ## Help, man pages, completion
 

@@ -27,7 +27,7 @@ not be expressed with flags, so 434 decisions were written into
   apply the saved choices for the groups found, with the same summary and
   confirmations as review (`--yes` for trash and move). Lets a script or
   another tool prepare decisions and apply them unattended.
-- [ ] **Import decisions from a file.** (p2) [feature] `dupes --decisions
+- [x] **Import decisions from a file.** (p2) [feature] `dupes --decisions
   FILE` (JSON or TSV: group hash, path to keep, action) loaded into
   `review_decisions`, so tools stop writing the table directly; reject rows
   whose group or kept path no longer matches the catalog.
@@ -49,7 +49,7 @@ not be expressed with flags, so 434 decisions were written into
   `internal/dupes/policy.go` `Policy.PathPrefer` still says the patterns
   are lowercased, but since d9674b3 they match case-sensitively; fix the
   comment so nobody reintroduces lowercasing.
-- [ ] **Clear applied decisions in one statement.** (p3) [perf]
+- [x] **Clear applied decisions in one statement.** (p3) [perf]
   `catalog.DeleteDecisions` runs one DELETE per key outside a transaction;
   for hundreds of applied groups (434 in the cleanup) batch them with
   `IN (...)` in chunks of 500, as `LoadDecisions` does.

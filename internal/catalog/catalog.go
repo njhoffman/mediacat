@@ -1147,12 +1147,77 @@ func (c *DB) SaveDecision(key string, d Decision, now time.Time) error {
 
 // DeleteDecisions forgets saved choices, e.g. once they have been applied.
 func (c *DB) DeleteDecisions(keys []string) error {
-	for _, k := range keys {
-		if _, err := c.db.Exec(`DELETE FROM review_decisions WHERE group_key = ?`, k); err != nil {
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for start := 0; start < len(keys); start += 500 {
+		chunk := keys[start:min(start+500, len(keys))]
+		args := make([]any, len(chunk))
+		for i, k := range chunk {
+			args[i] = k
+		}
+		if _, err := tx.Exec(`DELETE FROM review_decisions WHERE group_key IN (`+placeholders(len(chunk))+`)`, args...); err != nil {
 			return err
 		}
 	}
-	return nil
+	return tx.Commit()
+}
+
+// SavedDecision is a stored decision with its group key and when it was made.
+type SavedDecision struct {
+	Key string
+	Decision
+	UpdatedAt time.Time
+}
+
+// Decisions lists every saved decision, most recent first.
+func (c *DB) Decisions() ([]SavedDecision, error) {
+	rows, err := c.db.Query(`SELECT group_key, keep_volume, keep_relpath, action, updated_at FROM review_decisions
+		ORDER BY updated_at DESC, group_key`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SavedDecision
+	for rows.Next() {
+		var d SavedDecision
+		var at int64
+		if err := rows.Scan(&d.Key, &d.KeepVolume, &d.KeepRelPath, &d.Action, &at); err != nil {
+			return nil, err
+		}
+		d.UpdatedAt = time.Unix(at, 0)
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// SaveDecisions stores several decisions at once: all of them or, on an error, none.
+func (c *DB) SaveDecisions(ds []SavedDecision, now time.Time) error {
+	tx, err := c.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, d := range ds {
+		if _, err := tx.Exec(`INSERT INTO review_decisions (group_key, keep_volume, keep_relpath, action, updated_at)
+			VALUES (?, ?, ?, ?, ?) ON CONFLICT (group_key) DO UPDATE SET keep_volume = excluded.keep_volume,
+			keep_relpath = excluded.keep_relpath, action = excluded.action, updated_at = excluded.updated_at`,
+			d.Key, d.KeepVolume, d.KeepRelPath, d.Action, now.Unix()); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// ClearDecisions forgets every saved decision and returns how many there were.
+func (c *DB) ClearDecisions() (int64, error) {
+	res, err := c.db.Exec(`DELETE FROM review_decisions`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // Integrity statuses.

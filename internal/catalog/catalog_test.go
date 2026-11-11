@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -472,5 +473,38 @@ func TestMPEGVariableBitrateRederivedOnUpgrade(t *testing.T) {
 	}
 	if f, _ := db.GetFile(1, "b.mp4"); f == nil || f.Meta.VideoBitrate != 123 {
 		t.Errorf("other rows must not be rewritten: %+v", f)
+	}
+}
+
+func TestDecisionsListSaveClear(t *testing.T) {
+	db, _ := openTest(t)
+	ds := []SavedDecision{
+		{Key: "h1", Decision: Decision{KeepVolume: "v", KeepRelPath: "a", Action: ActionTrash}},
+		{Key: "h2", Decision: Decision{KeepVolume: "v", KeepRelPath: "b", Action: ""}},
+	}
+	if err := db.SaveDecisions(ds, t0); err != nil {
+		t.Fatal(err)
+	}
+	db.SaveDecision("h3", Decision{KeepVolume: "v", KeepRelPath: "c", Action: ActionMove}, t0.Add(time.Hour))
+	got, err := db.Decisions()
+	if err != nil || len(got) != 3 || got[0].Key != "h3" || got[1].Key != "h1" || got[1].KeepRelPath != "a" || !got[2].UpdatedAt.Equal(t0.Truncate(time.Second)) {
+		t.Fatalf("Decisions = %+v %v", got, err)
+	}
+	// Deleting many keys at once, across the 500-key chunks.
+	keys := []string{"h1"}
+	for i := range 600 {
+		keys = append(keys, fmt.Sprintf("x%d", i))
+	}
+	if err := db.DeleteDecisions(keys); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.Decisions(); len(got) != 2 {
+		t.Errorf("after delete: %+v", got)
+	}
+	if n, err := db.ClearDecisions(); err != nil || n != 2 {
+		t.Errorf("ClearDecisions = %d %v", n, err)
+	}
+	if got, _ := db.Decisions(); len(got) != 0 {
+		t.Errorf("after clear: %+v", got)
 	}
 }

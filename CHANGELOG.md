@@ -6,6 +6,22 @@ versions follow [semantic versioning](https://semver.org/) and are git tags
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-11
+
+### Added
+
+- `mediacat decisions` lists the choices `dupes --review` saved;
+  `decisions import FILE` loads them from TSV or JSON Lines (group key, path
+  to keep, action), checking that each kept copy is cataloged and has the
+  group's content, and importing nothing when any row is wrong;
+  `decisions clear KEY...` or `--all` forgets them. `decisions list --json`
+  prints the import format.
+
+### Changed
+
+- Applied decisions are cleared in one transaction instead of one statement
+  per group.
+
 ## [0.12.0] - 2026-11-11
 
 ### Added

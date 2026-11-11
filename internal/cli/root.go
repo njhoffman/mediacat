@@ -143,7 +143,7 @@ Shell completion: mediacat completion bash|zsh|fish prints the script.`,
 	f.IntVar(&a.staleDays, "stale-days", staleDefault, "warn when the catalog for a path is older than this many days (0 disables; env MEDIACAT_STALE_DAYS)")
 	f.BoolVar(&a.noColor, "no-color", false, "disable colored output (also honors NO_COLOR)")
 	f.StringVar(&a.stashCfg, "stash-config", a.cfg.StashConfig, "Stash config, read to remind you when files in Stash libraries change")
-	root.AddCommand(a.scanCmd(), a.listCmd(), a.infoCmd(), a.dupesCmd(), a.trashCmd(), a.historyCmd(), a.undoCmd(), a.checkCmd(), a.manCmd(version))
+	root.AddCommand(a.scanCmd(), a.listCmd(), a.infoCmd(), a.dupesCmd(), a.trashCmd(), a.historyCmd(), a.undoCmd(), a.checkCmd(), a.decisionsCmd(), a.manCmd(version))
 	a.registerCompletions(root)
 	return root
 }
